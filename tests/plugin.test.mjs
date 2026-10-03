@@ -55,12 +55,12 @@ function mockContext(services = {}) {
      * that returns a value ends the chain, `next()` continues it. That is the
      * contract the harness uses to decide whether to retry a failed request.
      */
-    waterfall(event, payload) {
+    waterfall(event, payload, final) {
       const chain = listeners.get(event) ?? []
       let index = -1
       const next = async () => {
         index += 1
-        if (index >= chain.length) return undefined
+        if (index >= chain.length) return final
         return await chain[index](payload, next)
       }
       return next()
@@ -247,6 +247,16 @@ describe('normalizeConfig', () => {
     assert.equal(normalizeConfig({ maxContextWindow: 128_000 }).maxContextWindow, 128_000)
     assert.equal(normalizeConfig({ maxContextWindow: -1 }).maxContextWindow, 0)
     assert.equal(normalizeConfig({ maxContextWindow: 'lots' }).maxContextWindow, 0)
+  })
+
+  it('reads the guard ratio as a share of the route\'s window, 0 meaning "off"', () => {
+    // 0 means "no guard", so an unusable value must not silently become a tiny
+    // budget that prunes every session from the first step.
+    assert.equal(normalizeConfig({}).contextGuardRatio, 0.7)
+    assert.equal(normalizeConfig({ contextGuardRatio: 0 }).contextGuardRatio, 0)
+    assert.equal(normalizeConfig({ contextGuardRatio: 0.5 }).contextGuardRatio, 0.5)
+    assert.equal(normalizeConfig({ contextGuardRatio: -1 }).contextGuardRatio, 0.7)
+    assert.equal(normalizeConfig({ contextGuardRatio: 'half' }).contextGuardRatio, 0.7)
   })
 
   it('reads auto-sync as on unless it was explicitly turned off', () => {
@@ -925,23 +935,27 @@ describe('upstream-overflow recovery, as mounted', () => {
   }
 
   /** Mount the plugin and hand back the middleware the agent loop would run. */
-  function mount(config = {}) {
-    const session = { surface: { replaceGeneration: 0 } }
+  function mount(config = {}, services = {}) {
+    const session = {
+      surface: { replaceGeneration: 0 },
+      requestHeader: () => ({ config: { provider: 'commandcode-goat-autosync', model: 'deepseek/deepseek-v4.1-flash' } }),
+    }
     const pruner = {
       calls: 0,
       pruneSession(target) {
         this.calls += 1
         target.surface.replaceGeneration += 1
-        return { pruned: 3, charsRemoved: 9000 }
+        // The real pruner answers with the replacements it landed, not a count.
+        return { pruned: [{ originalSeq: 1 }, { originalSeq: 2 }, { originalSeq: 3 }], charsRemoved: 9000 }
       },
     }
-    const { ctx, listeners } = mockContext({ toolResultPruner: pruner })
+    const { ctx, listeners } = mockContext({ toolResultPruner: pruner, ...services })
     apply(ctx, Config(config))
     assert.ok(listeners.has('agent/request-error'), 'the recovery hook was not registered')
-    const refuse = (provider = 'commandcode-goat-autosync') => ctx.waterfall('agent/request-error', {
+    const refuse = (provider = 'commandcode-goat-autosync', failure = GATEWAY_REFUSAL) => ctx.waterfall('agent/request-error', {
       agent: { session },
       provider,
-      failure: GATEWAY_REFUSAL,
+      failure,
     })
     return { ctx, pruner, session, refuse }
   }
@@ -963,5 +977,106 @@ describe('upstream-overflow recovery, as mounted', () => {
     const { pruner, refuse } = mount({ recoverUpstreamOverflow: false })
     assert.equal(await refuse(), undefined)
     assert.equal(pruner.calls, 0)
+  })
+
+  it('claims a dropped stream only with the guard ratio the config carries', async () => {
+    // The same wiring the guard uses has to reach the ladder, or a session can
+    // be reduced early and still die on the first request that fails.
+    const DROPPED = { code: 'TRANSPORT', message: 'Stream ended without finish_reason' }
+    const services = { tokenMeter: { measure: () => ({ totalTokens: 798_935 }) }, llm: { resolveModelInfo: async () => ({ context: { contextWindow: 1_000_000 } }) } }
+    const on = mount({ plan: 'goat' }, services)
+    assert.deepEqual(await on.refuse('commandcode-goat-autosync', DROPPED), { kind: 'retry' })
+
+    const off = mount({ plan: 'goat', contextGuardRatio: 0 }, services)
+    assert.equal(await off.refuse('commandcode-goat-autosync', DROPPED), undefined)
+    assert.equal(off.pruner.calls, 0)
+  })
+})
+
+describe('context guard, as mounted', () => {
+  /** The decision the harness' own pre-step fallback returns, unchanged. */
+  const HARNESS_CONTINUE = { kind: 'enter', messages: [] }
+
+  /**
+   * Mount the plugin with the two host services the guard reads, and hand back
+   * the middleware the agent loop would run before a step.
+   */
+  function mount(config = {}) {
+    const session = {
+      surface: { replaceGeneration: 0 },
+      requestHeader: () => ({ config: { provider: 'commandcode-goat-autosync', model: 'deepseek/deepseek-v4.1-flash' } }),
+    }
+    const pruner = {
+      calls: 0,
+      pruneSession(target) {
+        this.calls += 1
+        target.surface.replaceGeneration += 1
+        return { pruned: [{ originalSeq: 1 }], charsRemoved: 500 }
+      },
+    }
+    const { ctx, listeners } = mockContext({
+      toolResultPruner: pruner,
+      tokenMeter: { measure: () => ({ totalTokens: 798_935 }) },
+      llm: { resolveModelInfo: async () => ({ context: { contextWindow: 1_000_000 } }) },
+    })
+    const live = Config(config)
+    apply(ctx, live)
+    assert.ok(listeners.has('agent/pre-step'), 'the guard was not registered')
+    const step = async (provider) => {
+      const decision = await ctx.waterfall('agent/pre-step', {
+        agent: { session: provider === undefined ? session : { ...session, requestHeader: () => ({ config: { provider, model: 'deepseek/deepseek-v4.1-flash' } }) } },
+        turn: 1,
+        step: 1,
+      }, HARNESS_CONTINUE)
+      assert.deepEqual(decision, HARNESS_CONTINUE, 'the guard must pass the step decision through untouched')
+      return undefined
+    }
+    return { ctx, live, pruner, session, step }
+  }
+
+  it('reduces the session before the request on the generated route', async () => {
+    const { pruner, session, step } = mount({ plan: 'goat' })
+    assert.equal(await step(), undefined)
+    assert.equal(pruner.calls, 1)
+    assert.equal(session.surface.replaceGeneration, 1)
+  })
+
+  it('follows the tier the config selects, not the tier it started on', async () => {
+    const { pruner, step } = mount({ plan: 'max' })
+    assert.equal(await step('commandcode-goat-autosync'), undefined)
+    assert.equal(pruner.calls, 0)
+    assert.equal(await step('commandcode-max-autosync'), undefined)
+    assert.equal(pruner.calls, 1)
+  })
+
+  it('is switched off by its own ratio or by the shared switch', async () => {
+    const off = mount({ contextGuardRatio: 0 })
+    assert.equal(await off.step(), undefined)
+    assert.equal(off.pruner.calls, 0)
+
+    const disabled = mount({ recoverUpstreamOverflow: false })
+    assert.equal(await disabled.step(), undefined)
+    assert.equal(disabled.pruner.calls, 0)
+  })
+
+  it('reads the ratio live, so a settings write reaches a running guard', async () => {
+    // Volatile fields arrive as live references: mutating this object is what a
+    // settings write does to a running instance, and a guard that captured the
+    // ratio at mount would keep firing at the old budget until a restart.
+    const { pruner, live, step } = mount({ contextGuardRatio: 0 })
+    assert.equal(await step(), undefined)
+    assert.equal(pruner.calls, 0)
+
+    live.contextGuardRatio = 0.9
+    assert.equal(await step(), undefined)
+    assert.equal(pruner.calls, 0, 'a ratio at or above the harness line is no guard')
+
+    live.contextGuardRatio = 0.5
+    assert.equal(await step(), undefined)
+    assert.equal(pruner.calls, 1)
+
+    live.contextGuardRatio = 0
+    assert.equal(await step(), undefined)
+    assert.equal(pruner.calls, 1)
   })
 })

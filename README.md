@@ -245,7 +245,8 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `usageBaseURL` | `https://api.commandcode.ai` | `/alpha/*` 用量与搜索的 API 根 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` 工具 |
 | `enableBridge` | `true` | 提供设置卡片调用的 loopback 端点 |
-| `recoverUpstreamOverflow` | `true` | 上游用 `a single path expansion cannot exceed 512 candidates` 拒绝请求时，剪枝超长的工具结果并重试；第二次被拒时再压缩一个区段。窗口保持厂商声明的数字 |
+| `recoverUpstreamOverflow` | `true` | 上游拒绝或掐断一个 harness 无法分类的请求时（`a single path expansion cannot exceed 512 candidates` 那句 400；或半途断流 / 超时 / 空响应 / `STREAM_CLOSED`，且会话已在 guard 之内），剪枝超长的工具结果并重试；第二次被拒时再压缩一个区段。窗口保持厂商声明的数字 |
+| `contextGuardRatio` | `0.7` | 每一步发请求**之前**，会话到达 `该比例 × 这条路由的窗口` 时就用 harness 自己的剪枝器剪掉超长工具结果（纯本地，不花上游调用）。DSH 自己的压缩线在 `min(0.8 × 窗口, 窗口 − 输出预留 − 65536)` —— 1M 模型就是 800,000，正好是 Command Code 网关停止完成请求的位置，于是会话可以停在离触发线 1,065 tokens 的地方、被下一发请求掐死（见 0.7.6 一节）。窗口小到 harness 自己的线本来就更早时（无输出预留约 218K 以下、带 32,768 预留约 328K 以下），guard 主动让位给 harness；`0` 则到处关掉它。摘要本身仍然由 harness 在自己的阈值上决定 |
 | `maxContextWindow` | `0` | **逃生阀，不是修复**：写进每个模型的窗口上限（token）。`0` = 用厂商声明的数字 —— 路由应该发布的就是这个。压低它换来的是「更早、而且是永久地摘要」，等于把订阅卖 1M 的能力砍掉，只有在网关连缩小后的请求也拒绝时才值得动 |
 
 ---
@@ -494,6 +495,51 @@ threshold = min(window × 0.8, window − 保留输出 maxTokens − headroom 65
 开关 `recoverUpstreamOverflow`（默认开）；关掉即退回 0.7.4 之前的行为：上游拒绝就是这一轮结束。
 
 **仍然没解决的部分**：这条路由能承受的真实规模未知（只夹到 112K 冷请求成功、479K 冷请求失败），`512 candidates` 究竟是长度还是网关内部的路径展开上限也没有结论 —— 只有 Command Code 能回答。
+
+### 0.7.6：撞墙之前就压缩，而不是撞墙之后
+
+0.7.5 补上了分类，但它只在**网关已经拒绝之后**才动手。实测显示这还不够：上下文快满时，harness 的自动压缩
+永远等不到触发，请求先死在网关手里，用户看到的是「不压缩，直接报错」。
+
+**实测（会话 `session-8983bdb2`，用 `@deepseek-ai/dsh-token-meter` 的同一套 fold 复算，可逐条复核）**
+
+| 事实 | 数字 |
+|---|---|
+| 模型声明窗口 | 1,000,000 |
+| harness 压缩阈值 `min(window×0.8, window−maxTokens−headroom)` | **800,000** |
+| 失败前最后一步的实测压力（`ctx.tokenMeter.measure().totalTokens`） | **798,935** |
+| 与触发线的距离 | **1,065 tokens**（0.13%） |
+| 随后那一发请求 | 被半途掐断：`Stream ended without finish_reason`（`TRANSPORT`），5 次重试全败 |
+| 该回合的 `compaction/*` 记录 | **0 条** —— 一次压缩都没发生 |
+| 同一尺寸的手动 `/compact` | 也失败（`compaction/end` 里是同一句断流） |
+
+会话停在离触发线 1,065 tokens 的地方，而**接下来那一发请求正是会跨过触发线的那一发**；它没能成功，触发线
+就永远没被跨过。压窗口能改变这个位置，但代价是「更早、而且永久地摘要」。这一版换成另一件事：**在阈值之下
+留出真的余量，且不牺牲窗口**。
+
+- **`contextGuardRatio`（默认 `0.7`）**：每一步发请求之前，只要这条路由的会话到了 `0.7 × 该路由的窗口`
+  （1M 模型 = 700,000），就用 harness 自己的 `toolResultPruner` 剪掉超长工具结果 —— 纯本地、不花上游调用、
+  保留对话尾部，与 harness 自己在 800,000 时做的第一根杠杆逐字节相同，只是早了 100K。窗口小到 harness
+  自己的线本来就更早时（约 218K 以下无预留、328K 以下带 32,768 预留），guard 主动让位 —— 那里 harness
+  的摘要比剪枝更划算，也不缺这点余量。
+- **摘要仍然由 harness 决定**：guard 不抢这个决定，只把阈值本该有的余量还回去；剪不动时（文本型会话）它会
+  说明一次，然后把剩余空间留给 harness 自己的压缩线；同一个会话在“剪不动”之后要再长 4,096 tokens 才会
+  重新扫一遍，避免每步都全量扫一次工具结果。
+- **`recoverUpstreamOverflow` 补上第二种失败形态**：`TRANSPORT` / `TIMEOUT` / `EMPTY_RESPONSE` / `STREAM_CLOSED`
+  （半途断流、超时、空响应、事件流提前关闭）**且**会话已在 guard 之内时，才走「剪枝 → 重试；再失败 → 压缩
+  一个区段 → 重试」。小会话里的普通网络抖动仍然交给 harness 自己的重试策略，不会被变成一次付费摘要；
+  `SERVER`(503) 与 `RATE_LIMIT` 同理不管。
+- **修掉 0.7.5 的两个真错误**：其一，harness 的 `pruneSession()` 返回 `{ pruned: [替换列表] }`（数组），
+  0.7.5 按数字读，于是永远得到 0 —— 结果是每次被拒都直接跳到付费的压缩，最便宜的那一级从未生效；其二，
+  0.7.5 在没有 `compactIfNeeded` 时会退回手工的 `compactNow`，但后者走 `agent.runMaintenance`、要求
+  agent 空闲，而在 `agent/request-error` 里它永远在跑一轮回合 —— 那一步注定以 `busy` 失败，只会写下一行
+  误导人的日志。现在两种 `pruned` 形状都读，缺 `compactIfNeeded` 时直接说明「这个 profile 没有回合内
+  压缩入口，只剪枝」。
+
+`contextGuardRatio: 0` 关掉 guard；`recoverUpstreamOverflow: false` 关掉两者（含那位补的分类）。
+
+**规模边界更新**：这次实测把下界抬到了「同一回合 798.8K 的请求连续 5 步成功」，随后约 800K 上被掐断 ——
+与「网关大约在声明窗口的 80% 处停止服务」一致，也正是 harness 阈值落点的位置。
 
 这两个改动的取舍是刻意的：**默认自动写一次，比让人先找到按钮更符合「装一个插件」的预期**；而写入本身仍然是幂等的、可见的、可在 **设置 → 模型** 里直接改的。要恢复成「只在点按钮时写」，把 `autoSync` 设成 `false` 即可。
 

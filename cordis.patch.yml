@@ -24,15 +24,30 @@
 #     # pruneOtherPlans: false  # on by default: a switch removes the other tier's routes
 #     # webSearch: true
 #     # recoverUpstreamOverflow: false  # on by default: reduce + retry once the gateway refuses
+#     # contextGuardRatio: 0.7  # share of the route's window at which to prune before a request; 0 disables
 #     # maxContextWindow: 0  # 0 keeps the vendor's own window on every model
+#
+# `contextGuardRatio` is the one that keeps a long session alive. DSH compacts at
+# min(0.8 x window, window - output reservation - 65536) — 800,000 tokens for a
+# 1,000,000-token model — and Command Code's gateway stops completing requests
+# right about there, so a session can sit one step short of that line and be
+# refused on the request that would have crossed it. At the guard the plugin
+# prunes oversized tool results through the harness' own pruner (no upstream
+# call, conversation tail kept); summarization stays the harness' own decision at
+# the harness' own threshold. Where the harness' line is already the earlier
+# trigger (a window below ~218k tokens, or ~328k with the adapter's usual 32,768
+# output reservation) the guard steps aside. Set 0 to leave everything to the
+# harness' threshold.
 #
 # `recoverUpstreamOverflow` is what handles a gateway that refuses a request it
 # cannot expand — the "path expansion / 512 candidates" 400 the harness reads as
-# an ordinary invalid request, and therefore neither retries nor compacts for.
-# With it on, this plugin prunes oversized tool results and asks for the request
-# to be retried, and compacts one region on a second refusal, so the routes can
-# keep publishing the window the vendor declares. Turn it off to let the
-# upstream error stand as it is.
+# an ordinary invalid request, and therefore neither retries nor compacts for —
+# and, for a session already past the guard, a request the gateway drops or
+# stalls (TRANSPORT / TIMEOUT / EMPTY_RESPONSE / STREAM_CLOSED). With it on, this
+# plugin prunes oversized tool results and asks for the request to be retried,
+# and compacts one region on a second refusal, so the routes can keep publishing
+# the window the vendor declares. Turn it off to let the upstream error stand as
+# it is.
 #
 # `maxContextWindow` is the escape hatch, and it is not a fix: a vendor number
 # the gateway cannot honour does not buy a longer conversation, it buys a
