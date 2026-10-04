@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict'
 import { after, describe, it } from 'node:test'
+import { enableTimeouts } from './timers.mjs'
 
 import {
   Config,
   DEFAULT_AUTO_SYNC_INTERVAL_MS,
   FIRST_SYNC_DELAY_MS,
+  MAX_TIMER_DELAY_MS,
   SETTINGS_NS,
   SYNC_TIMEOUT_MS,
   apply,
   normalizeConfig,
   readCatalog,
+  syncConfigSignature,
 } from '../lib/index.js'
 import { DEFAULT_CATALOG_URL } from '../lib/catalog.js'
 
@@ -259,6 +262,36 @@ describe('normalizeConfig', () => {
     assert.equal(normalizeConfig({ contextGuardRatio: 'half' }).contextGuardRatio, 0.7)
   })
 
+  it('signs a sync with the fields a sync reads, and nothing else', () => {
+    const base = normalizeConfig({ plan: 'goat' })
+    // A field the run reads changes the signature...
+    for (const [key, value] of Object.entries({
+      plan: 'max',
+      sourceURL: 'https://elsewhere.test/models',
+      catalogURL: 'https://elsewhere.test/plans/goat',
+      extraIds: ['private/model'],
+      includeReasoningEfforts: true,
+      maxContextWindow: 800_000,
+      targetApiKeyEnv: 'ANOTHER_KEY',
+      targetBaseURL: 'https://gateway.test/v1',
+      pruneOtherPlans: false,
+    })) {
+      assert.notEqual(syncConfigSignature(base), syncConfigSignature({ ...base, [key]: value }), `${key} must invalidate a running sync`)
+    }
+    // ...and one it does not leaves it alone, however the reader flips it.
+    assert.equal(syncConfigSignature(base), syncConfigSignature({
+      ...base,
+      webSearch: !base.webSearch,
+      enableUsageTool: false,
+      contextGuardRatio: 0.5,
+      recoverUpstreamOverflow: false,
+      autoSync: false,
+      autoSyncIntervalMs: 60_000,
+      usageBaseURL: 'https://elsewhere.test',
+      enableBridge: false,
+    }))
+  })
+
   it('reads auto-sync as on unless it was explicitly turned off', () => {
     // The whole point of the default is that a fresh install produces the
     // provider row in Settings → Models without anyone finding a button, so
@@ -430,6 +463,21 @@ describe('apply', () => {
 
     for (const effect of [...effects].reverse()) effect.dispose?.()
     assert.equal(tools.state.tools.length, 0, 'unload releases the registration')
+    ctx.emit('loader/volatile-update')
+    assert.equal(tools.state.tools.length, 0, 'a later config event cannot resurrect the unloaded tool')
+  })
+
+  it('does not select an unloaded search service after a volatile update', () => {
+    const web = mockWeb({ selected: 'original' })
+    const { ctx, effects } = mockContext({ web })
+    const config = Config({ webSearch: true })
+    apply(ctx, config)
+    assert.equal(web.searchProviderId, 'commandcode')
+    const cleanup = effects.find((effect) => effect.label === 'dsh-commandcode-goat: web search')
+    cleanup.dispose()
+    assert.equal(web.searchProviderId, 'original')
+    ctx.emit('loader/volatile-update')
+    assert.equal(web.searchProviderId, 'original')
   })
 })
 
@@ -450,15 +498,34 @@ describe('automatic creation', () => {
     return { settings, config }
   }
 
+  it('splits long intervals without syncing early or overflowing the timer', async (t) => {
+    const timers = enableTimeouts(t)
+    const { settings } = mount(Config({ autoSyncIntervalMs: MAX_TIMER_DELAY_MS + 60_000 }))
+    await withFetch(upstreamFetch(), async () => {
+      timers.tick(FIRST_SYNC_DELAY_MS)
+      await settle()
+      assert.equal(settings.state.mutations.length, 1)
+      timers.tick(MAX_TIMER_DELAY_MS)
+      await settle()
+      assert.equal(settings.state.mutations.length, 1)
+      timers.tick(59_999)
+      await settle()
+      assert.equal(settings.state.mutations.length, 1)
+      timers.tick(1)
+      await settle()
+      assert.equal(settings.state.mutations.length, 2)
+    })
+  })
+
   it('creates the routes on its own, after letting the tree compose', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timers = enableTimeouts(t)
     const { settings } = mount(Config({}))
     // Nothing is written while the tree is still coming up: the write targets
     // another plugin's section and would race that plugin's registration.
     assert.equal(settings.state.mutations.length, 0)
 
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      timers.tick(FIRST_SYNC_DELAY_MS)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 1)
@@ -466,12 +533,12 @@ describe('automatic creation', () => {
   })
 
   it('reads the toggle at each tick, so turning it off stops the writes', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timers = enableTimeouts(t)
     // A plain object, not `Config({...})`: this is the live reference the card
     // edits in place, which is the whole point of a volatile field.
     const { settings, config } = mount({ autoSync: false })
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      timers.tick(FIRST_SYNC_DELAY_MS)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 0, 'an off switch means no write')
@@ -479,7 +546,7 @@ describe('automatic creation', () => {
     // Flipped the way the card flips it — no remount, no reload.
     config.autoSync = true
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(DEFAULT_AUTO_SYNC_INTERVAL_MS)
+      timers.tick(DEFAULT_AUTO_SYNC_INTERVAL_MS)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 1, 'the flip reaches the next tick')
@@ -490,7 +557,7 @@ describe('automatic creation', () => {
     // tick would delete the other tier behind a reader who is mid-switch, and a
     // profile composing two rows for two plans would have each row delete the
     // other's routes the moment it started.
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timers = enableTimeouts(t)
     const settings = mockSettings({
       entries: [{
         ns: LLM_PI_AI,
@@ -502,7 +569,7 @@ describe('automatic creation', () => {
     const { ctx } = mockContext({ settings })
     apply(ctx, Config({ plan: 'goat' }))
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      timers.tick(FIRST_SYNC_DELAY_MS)
       await settle()
     })
     assert.ok(settings.state.mutations.length > 0, 'the tier was written')
@@ -513,10 +580,10 @@ describe('automatic creation', () => {
   })
 
   it('reschedules from the interval as it stands after the tick', async (t) => {
-    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const timers = enableTimeouts(t)
     const { settings, config } = mount({ autoSync: true, autoSyncIntervalMs: 60_000 })
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(FIRST_SYNC_DELAY_MS)
+      timers.tick(FIRST_SYNC_DELAY_MS)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 1)
@@ -527,19 +594,19 @@ describe('automatic creation', () => {
     // in force from the cycle after that one.
     config.autoSyncIntervalMs = 24 * 60 * 60 * 1000
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(60_000)
+      timers.tick(60_000)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 2, 'the wait already scheduled still ran')
 
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(60_000)
+      timers.tick(60_000)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 2, 'and the new cadence stopped the next one')
 
     await withFetch(upstreamFetch(), async () => {
-      t.mock.timers.tick(24 * 60 * 60 * 1000)
+      timers.tick(24 * 60 * 60 * 1000)
       await settle()
     })
     assert.equal(settings.state.mutations.length, 3, 'the new cadence is now what waits')
@@ -589,16 +656,110 @@ describe('the sync the bridge drives', () => {
     return JSON.parse(res.body)
   }
 
+  it('clears a previous subscription when the next account read fails', async () => {
+    const { route } = mount({ targetApiKeyEnv: 'CC_USAGE_CACHE_TEST' })
+    const previous = process.env.CC_USAGE_CACHE_TEST
+    process.env.CC_USAGE_CACHE_TEST = 'fake-key'
+    let healthy = true
+    try {
+      await withFetch(async (url) => {
+        if (String(url).includes('/docs/plans/')) return { ok: true, text: async () => goatPage(CATALOG_ENTRIES) }
+        if (!healthy) return { ok: false, status: 401 }
+        return { ok: true, json: async () => ({ data: { planId: 'individual-pro', status: 'active' } }) }
+      }, async () => {
+        await drive(route('/usage'))
+        assert.equal((await drive(route('/describe'))).value.subscription.plan, 'pro')
+        healthy = false
+        await drive(route('/usage'))
+        assert.equal((await drive(route('/describe'))).value.subscription, undefined)
+      })
+    } finally {
+      if (previous === undefined) delete process.env.CC_USAGE_CACHE_TEST
+      else process.env.CC_USAGE_CACHE_TEST = previous
+    }
+  })
+
+  it('rejects overlapping sync and prune calls and releases the lock after failure', async () => {
+    const { settings, route } = mount()
+    let release
+    let notify
+    const started = new Promise((resolve) => { notify = resolve })
+    await withFetch(async () => {
+      notify()
+      await new Promise((resolve) => { release = resolve })
+      throw new Error('discovery failed')
+    }, async () => {
+      const first = drive(route('/sync'))
+      await started
+      assert.equal((await drive(route('/sync'))).code, 'sync-busy')
+      assert.equal((await drive(route('/prune'))).code, 'sync-busy')
+      assert.equal(settings.state.mutations.length, 0)
+      release()
+      assert.equal((await first).ok, false)
+      assert.equal((await drive(route('/prune'))).ok, true)
+    })
+  })
+
+  it('does not write a stale plan when config changes during discovery', async () => {
+    const settings = mockSettings()
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    const config = Config({ plan: 'pro' })
+    apply(ctx, config)
+    const upstream = upstreamFetch()
+    const payload = await withFetch(async (...args) => {
+      config.plan = 'goat'
+      return upstream(...args)
+    }, () => drive(webServer.state.routes.find((route) => route.path.endsWith('/sync'))))
+    assert.equal(payload.ok, false)
+    assert.equal(payload.code, 'config-changed')
+    assert.equal(settings.state.mutations.length, 0)
+  })
+
+  it('still syncs when a field the run does not read changes during discovery', async () => {
+    // Discovery takes seconds. A reader who flips the search switch, the usage
+    // tool or the guard ratio in that window has not changed what this run
+    // publishes, so the run must land rather than refuse with config-changed.
+    const settings = mockSettings()
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    const config = Config({ plan: 'pro' })
+    apply(ctx, config)
+    const upstream = upstreamFetch()
+    const payload = await withFetch(async (...args) => {
+      config.webSearch = !config.webSearch
+      config.enableUsageTool = false
+      config.contextGuardRatio = 0.5
+      return upstream(...args)
+    }, () => drive(webServer.state.routes.find((route) => route.path.endsWith('/sync'))))
+    assert.equal(payload.ok, true)
+    assert.ok(settings.state.mutations.length > 0, 'the tier was written')
+  })
+
+  it('aborts discovery on unload and prevents a late write', async () => {
+    const settings = mockSettings()
+    const webServer = mockWebServer()
+    const { ctx, effects } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'pro' }))
+    let signal
+    const upstream = upstreamFetch()
+    const payload = await withFetch(async (url, options) => {
+      signal = options.signal
+      for (const effect of [...effects].reverse()) effect.dispose?.()
+      return upstream(url, options)
+    }, () => drive(webServer.state.routes.find((route) => route.path.endsWith('/sync'))))
+    assert.equal(signal.aborted, true)
+    assert.equal(payload.ok, false)
+    assert.equal(settings.state.mutations.length, 0)
+  })
+
   it('writes one provider profile per route that holds models', async () => {
     const { settings, route } = mount({ plan: 'pro' })
     const payload = await withFetch(upstreamFetch(), () => drive(route('/sync')))
     assert.equal(payload.ok, true)
-    // One write per route: each route reaches the provider plugin as a single
-    // atomic section, so a tier that gains an Anthropic route cannot leave the
-    // OpenAI one half-written.
-    assert.deepEqual(settings.state.mutations.map((mutation) => mutation.ns), [LLM_PI_AI, LLM_PI_AI])
-    const [openaiOp] = settings.state.mutations[0].ops
-    const [anthropicOp] = settings.state.mutations[1].ops
+    // Both protocols commit in one revision-fenced operation.
+    assert.deepEqual(settings.state.mutations.map((mutation) => mutation.ns), [LLM_PI_AI])
+    const [openaiOp, anthropicOp] = settings.state.mutations[0].ops
     assert.equal(openaiOp.path.join('.'), 'providers.commandcode-pro-autosync')
     assert.equal(anthropicOp.path.join('.'), 'providers.commandcode-pro-anthropic')
 
@@ -875,6 +1036,22 @@ describe('readCatalog', () => {
 })
 
 describe('the usage tool', () => {
+  it('cancels an active account request when the plugin unloads', async () => {
+    const tools = mockTools()
+    const credentials = { resolve: async () => ({ value: 'fake-key' }) }
+    const { ctx, effects } = mockContext({ tools, credentials })
+    apply(ctx, Config({}))
+    let calls = 0
+    let aborted = false
+    await withFetch(async (_url, { signal }) => {
+      calls += 1
+      for (const effect of [...effects].reverse()) effect.dispose?.()
+      aborted = signal.aborted
+      throw signal.reason
+    }, () => tools.state.tools[0].execute({}, {}))
+    assert.equal(aborted, true)
+    assert.equal(calls, 1)
+  })
   it('returns a labelled summary a model can read', async () => {
     const tools = mockTools()
     const { ctx } = mockContext({ settings: mockSettings(), tools })

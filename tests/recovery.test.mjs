@@ -305,6 +305,16 @@ describe('installOverflowRecovery', () => {
     assert.match(logs.find((entry) => entry.level === 'info').message, /pruned 1 tool result/)
   })
 
+  it('restores the budget after a failed turn becomes idle', async () => {
+    const { ctx, agent, refuse } = setup({ maxAttempts: 1 })
+    assert.deepEqual(await refuse(), { kind: 'retry' })
+    assert.equal(await refuse(), undefined)
+    ctx.emit('agent/status', { agent, status: 'running' })
+    assert.equal(await refuse(), undefined)
+    ctx.emit('agent/status', { agent, status: 'idle' })
+    assert.deepEqual(await refuse(), { kind: 'retry' })
+  })
+
   it('does not touch another provider, another failure, or a disabled hook', async () => {
     const foreign = setup()
     assert.equal(await foreign.refuse({ provider: 'deepseek-account' }), undefined)
@@ -533,6 +543,15 @@ describe('installOverflowRecovery', () => {
 })
 
 describe('installContextGuard', () => {
+  it('preserves the step result when the host logger throws', async () => {
+    const session = mockSession()
+    const { ctx } = mockContext({ tokenMeter: mockMeter(798_935), llm: mockLlm(1_000_000),
+      toolResultPruner: mockPruner(session) })
+    ctx.logger = { info() { throw new Error('logger closed') }, warn() { throw new Error('logger closed') } }
+    installContextGuard(ctx, { routeKeys: () => ROUTES })
+    const final = { kind: 'enter', messages: [] }
+    assert.equal(await ctx.waterfall('agent/pre-step', { agent: mockAgent(session) }, final), final)
+  })
   /**
    * The decision the harness' own `agent/pre-step` fallback returns, and what
    * the agent loop dereferences straight after the waterfall (`decision.kind`,

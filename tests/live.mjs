@@ -48,7 +48,7 @@ const read = async (label, fn, attempts = 4) => {
   return undefined
 }
 
-const apiList = await read('model list', () => fetchModelList(`${API_ROOT}/provider/v1/models`))
+const apiList = await read('model list', () => fetchModelList(`${API_ROOT}/provider/v1/models`, AbortSignal.timeout(15_000)))
 check('the model list answers with models', (apiList?.length ?? 0) > 0, `${apiList?.length ?? 0} models`)
 const routed = (apiList ?? []).filter((model) => model.supportedEndpoints !== undefined)
 check('entries state their supported endpoints', routed.length === (apiList?.length ?? 0), `${routed.length}/${apiList?.length ?? 0}`)
@@ -61,7 +61,7 @@ console.log(`      routing: ${JSON.stringify(protocols)}`)
 check('every model routes somewhere', Object.values(protocols).reduce((total, count) => total + count, 0) === (apiList?.length ?? 0))
 
 console.log('\n== live capability catalog ==')
-const catalog = (await read('plan page', () => fetchCatalog('https://commandcode.ai/docs/plans/goat'))) ?? []
+const catalog = (await read('plan page', () => fetchCatalog('https://commandcode.ai/docs/plans/goat', AbortSignal.timeout(15_000)))) ?? []
 check('the plan page yields a catalog', catalog.length > 0, `${catalog.length} entries`)
 if (catalog.length > 0) {
   const tiers = {}
@@ -112,16 +112,17 @@ const bogus = 'cmd_live_probe_invalid'
 const probe = async (label, request) => {
   try {
     const response = await request()
-    check(label, response.status !== 404, `HTTP ${response.status}`)
+    check(label, response.status === 401 || response.status === 403, `HTTP ${response.status}`)
   } catch (error) {
     check(label, false, error instanceof Error ? error.message : String(error))
   }
 }
 for (const path of USAGE_PATHS) {
-  await probe(`${path} is live`, () => fetch(`${API_ROOT}${path}`, { headers: usageHeaders(bogus) }))
+  await probe(`${path} is live`, () => fetch(`${API_ROOT}${path}`, { headers: usageHeaders(bogus), signal: AbortSignal.timeout(15_000) }))
 }
 await probe(`${SEARCH_ROUTE} is live`, () => fetch(`${API_ROOT}${SEARCH_ROUTE}`, {
   method: 'POST',
+  signal: AbortSignal.timeout(15_000),
   headers: { ...usageHeaders(bogus), 'content-type': 'application/json' },
   body: JSON.stringify({ query: 'probe', numResults: 1 }),
 }))

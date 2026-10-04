@@ -15,6 +15,56 @@ import {
 
 const BASE = 'https://api.commandcode.ai'
 
+describe('Node 20 cancellation compatibility', () => {
+  it('keeps the request timeout when AbortSignal.any is unavailable', async () => {
+    const originalAny = Object.getOwnPropertyDescriptor(AbortSignal, 'any')
+    const originalTimeout = AbortSignal.timeout
+    const originalFetch = globalThis.fetch
+    const caller = new AbortController()
+    const reason = new DOMException('deadline reached', 'TimeoutError')
+    let requests = 0
+    Object.defineProperty(AbortSignal, 'any', { value: undefined, configurable: true })
+    AbortSignal.timeout = () => {
+      const deadline = new AbortController()
+      deadline.abort(reason)
+      return deadline.signal
+    }
+    globalThis.fetch = async (_url, { signal }) => {
+      requests += 1
+      assert.notEqual(signal, caller.signal)
+      assert.equal(signal.aborted, true)
+      assert.equal(signal.reason, reason)
+      throw signal.reason
+    }
+    try {
+      const report = await fetchUsageReport('fake-key', BASE, caller.signal)
+      assert.ok(requests > 0)
+      assert.ok(report.failures.length > 0)
+      assert.equal(caller.signal.aborted, false)
+    } finally {
+      if (originalAny) Object.defineProperty(AbortSignal, 'any', originalAny)
+      else delete AbortSignal.any
+      AbortSignal.timeout = originalTimeout
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('does not issue network calls after caller cancellation', async () => {
+    const originalFetch = globalThis.fetch
+    const caller = new AbortController()
+    caller.abort()
+    let requests = 0
+    globalThis.fetch = async () => { requests += 1; throw new Error('unexpected fetch') }
+    try {
+      const report = await fetchUsageReport('fake-key', BASE, caller.signal)
+      assert.equal(requests, 0)
+      assert.ok(report.failures.length > 0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
 const HEALTHY = {
   '/alpha/whoami': { user: { id: 'u1', name: 'Ada', userName: 'ada' }, org: { id: 'org 1' } },
   '/alpha/usage/summary': {

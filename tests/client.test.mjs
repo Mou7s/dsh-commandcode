@@ -360,6 +360,311 @@ describe('bundle shape', () => {
 })
 
 describe('rendering', () => {
+  it('preserves an edit made while restoring a field to its default', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext({ acceptWrites: true })
+    const originalGet = ctx.configForms.get
+    let release
+    ctx.configForms.get = (id) => {
+      const scope = originalGet(id)
+      const unset = scope.unset
+      scope.unset = async (key) => {
+        await new Promise((resolve) => { release = resolve })
+        return unset(key)
+      }
+      return scope
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      actions.edit('sourceURL', 'https://old.test/models')
+      const reset = actions.reset('sourceURL')
+      actions.edit('sourceURL', 'https://new.test/models')
+      release()
+      await reset
+      assert.equal(store.getSnapshot().fields.sourceURL, 'https://new.test/models')
+      assert.equal(store.getSnapshot().dirty, true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  it('shares repeated sync and prune actions and allows a subsequent retry', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext()
+    const originalFetch = globalThis.fetch
+    const pending = []
+    globalThis.fetch = async (url) => {
+      const path = String(url).split('/').at(-1)
+      if (path === 'sync' || path === 'prune') {
+        return new Promise((resolve) => pending.push({ path, resolve }))
+      }
+      return { ok: true, json: async () => ({ ok: true, value: {} }) }
+    }
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions } = registrations[0].face
+      for (const action of ['sync', 'prune']) {
+        const first = actions[action]()
+        assert.equal(actions[action](), first)
+        assert.equal(pending.filter((request) => request.path === action).length, 1)
+        pending.find((request) => request.path === action).resolve({ ok: true, json: async () => ({ ok: false, message: 'temporary failure' }) })
+        await first
+        const retry = actions[action]()
+        assert.equal(pending.filter((request) => request.path === action).length, 2)
+        pending.filter((request) => request.path === action)[1].resolve({ ok: true, json: async () => ({ ok: true, value: {} }) })
+        await retry
+      }
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  it('keeps new edits made while a save is awaiting the host', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, scopeValue } = browserContext({ acceptWrites: true })
+    const originalGet = ctx.configForms.get
+    let release
+    let notify
+    const started = new Promise((resolve) => { notify = resolve })
+    ctx.configForms.get = (id) => {
+      const scope = originalGet(id)
+      const set = scope.set
+      scope.set = async (key, value) => {
+        if (key === 'plan') {
+          notify()
+          await new Promise((resolve) => { release = resolve })
+        }
+        return set(key, value)
+      }
+      return scope
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      actions.edit('plan', 'pro')
+      const save = actions.save()
+      await started
+      actions.edit('plan', 'max')
+      assert.equal(actions.save(), save, 'overlapping saves share the current write')
+      release()
+      assert.equal(await save, 0)
+      assert.equal(scopeValue.value.plan, 'pro')
+      assert.equal(store.getSnapshot().fields.plan, 'max')
+      assert.equal(store.getSnapshot().dirty, true)
+      assert.equal(store.getSnapshot().phase, 'idle')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  it('keeps only failed fields dirty after a partial save and retries them', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, scopeValue } = browserContext({ acceptWrites: true })
+    const originalGet = ctx.configForms.get
+    const writes = []
+    let rejectPlan = true
+    ctx.configForms.get = (id) => {
+      const scope = originalGet(id)
+      const set = scope.set
+      scope.set = async (key, value) => {
+        writes.push(key)
+        if (key === 'plan' && rejectPlan) return false
+        return set(key, value)
+      }
+      return scope
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      actions.edit('plan', 'pro')
+      actions.edit('webSearch', true)
+      assert.equal(await actions.save(), 1)
+      assert.equal(store.getSnapshot().fields.plan, 'pro')
+      assert.equal(scopeValue.value.webSearch, true)
+      assert.equal(store.getSnapshot().dirty, true)
+      assert.deepEqual(writes.sort(), ['plan', 'webSearch'])
+      writes.length = 0
+      rejectPlan = false
+      assert.equal(await actions.save(), 0)
+      assert.deepEqual(writes, ['plan'])
+      assert.equal(scopeValue.value.plan, 'pro')
+      assert.equal(store.getSnapshot().dirty, false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+  it('shares overlapping usage and status refreshes', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext()
+    const originalFetch = globalThis.fetch
+    const pending = []
+    globalThis.fetch = (url) => new Promise((resolve) => pending.push({ url: String(url), resolve }))
+    try {
+      entry.factory(() => react).apply(ctx)
+      const { actions } = registrations[0].face
+      const first = actions.refreshUsage()
+      const second = actions.refreshUsage()
+      assert.equal(first, second)
+      assert.equal(pending.filter((item) => item.url.endsWith('/usage')).length, 1)
+      const status = actions.refreshStatus()
+      assert.equal(pending.filter((item) => item.url.endsWith('/describe')).length, 1)
+      const response = (value) => ({ ok: true, json: async () => ({ ok: true, value }) })
+      pending.find((item) => item.url.endsWith('/usage')).resolve(response({}))
+      await Promise.resolve()
+      pending.find((item) => item.url.endsWith('/describe')).resolve(response({ entryId: NS }))
+      await Promise.all([first, second, status])
+      assert.equal(registrations[0].face.store.getSnapshot().usage.phase, 'ready')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('cancels pending card requests without committing late responses', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, effects } = browserContext()
+    const originalFetch = globalThis.fetch
+    const pending = []
+    globalThis.fetch = (_url, options) => new Promise((resolve) => pending.push({ signal: options.signal, resolve }))
+    try {
+      entry.factory(() => react).apply(ctx)
+      const { actions, store } = registrations[0].face
+      const usage = actions.refreshUsage()
+      const status = actions.refreshStatus()
+      for (const effect of [...effects].reverse()) effect.dispose?.()
+      assert.ok(pending.every((request) => request.signal.aborted))
+      for (const request of pending) request.resolve({ ok: true, json: async () => ({ ok: true, value: { entryId: 'late' } }) })
+      await Promise.all([usage, status])
+      assert.equal(store.getSnapshot().status, null)
+      assert.equal(store.getSnapshot().usage.report, undefined)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('never commits a late sync or prune answer either', async () => {
+    // The same promise as above, for the two controls that mutate the host: a
+    // card that is gone when the answer arrives must not repaint from it.
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, effects } = browserContext()
+    const originalFetch = globalThis.fetch
+    const pending = []
+    globalThis.fetch = (url, options) => new Promise((resolve) => pending.push({ path: String(url).split('/').at(-1), signal: options.signal, resolve }))
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      const sync = actions.sync()
+      const prune = actions.prune()
+      for (const effect of [...effects].reverse()) effect.dispose?.()
+      assert.ok(pending.every((request) => request.signal.aborted))
+      for (const request of pending) request.resolve({ ok: true, json: async () => ({ ok: true, value: { late: true } }) })
+      await Promise.all([sync, prune])
+      assert.equal(store.getSnapshot().sync.result, undefined)
+      assert.equal(store.getSnapshot().sync.error, null)
+      assert.equal(store.getSnapshot().prune.result, undefined)
+      assert.equal(store.getSnapshot().prune.error, null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('issues a fresh status read after a mutation instead of joining an older one', async () => {
+    // `refreshStatus` shares its in-flight request, which is right for a burst of
+    // readers and wrong for the read that reports a mutation: the request it
+    // would join was issued before the removal it is meant to describe, so the
+    // card would list the leftovers the reader just deleted.
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext()
+    const originalFetch = globalThis.fetch
+    const pending = []
+    globalThis.fetch = (url, options) => new Promise((resolve) => pending.push({ path: String(url).split('/').at(-1), signal: options.signal, resolve }))
+    const response = (value) => ({ ok: true, json: async () => ({ ok: true, value }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      const describes = () => pending.filter((request) => request.path === 'describe')
+      assert.equal(describes().length, 1, 'the mount read the status once')
+
+      const prune = actions.prune()
+      const removal = pending.find((request) => request.path === 'prune')
+      assert.ok(removal, 'the prune was requested')
+      removal.resolve(response({ removed: 2 }))
+      await settle()
+      // The status read from the mount is still in flight; resolving it releases
+      // the post-mutation refresh, which must then ask again.
+      describes()[0].resolve(response({ entryId: NS, marker: 'before' }))
+      await settle()
+      assert.equal(describes().length, 2, 'the mutation forced a second status read')
+      describes()[1].resolve(response({ entryId: NS, marker: 'after' }))
+      await prune
+      assert.equal(store.getSnapshot().status.marker, 'after')
+      assert.equal(store.getSnapshot().prune.result.removed, 2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('keeps an unsaved edit when the reader asks for a reload', async () => {
+    // Reload means "ask the host again", not "throw my work away": dropping a
+    // draft is what the footer's 放弃修改 / Discard button is for.
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext({ acceptWrites: true })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      actions.edit('sourceURL', 'https://draft.test/models')
+      await actions.reload()
+      assert.equal(store.getSnapshot().fields.sourceURL, 'https://draft.test/models')
+      assert.equal(store.getSnapshot().dirty, true)
+
+      // The same call still re-reads what the reader did not edit.
+      actions.edit('plan', 'pro')
+      await actions.reload()
+      assert.equal(store.getSnapshot().fields.plan, 'pro')
+      assert.equal(store.getSnapshot().dirty, true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('stops calling an edit pending once it is back on the host value', async () => {
+    // A field typed back to the value the host already serves is not a change.
+    // Left dirty it froze that field against every later host refresh, and the
+    // footer kept offering a write nobody wanted.
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, scopeValue } = browserContext({ acceptWrites: true })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      assert.equal(scopeValue.value.plan, 'goat')
+      actions.edit('plan', 'pro')
+      actions.edit('plan', 'goat')
+      assert.equal(store.getSnapshot().dirty, true, 'still a pending edit until a refresh compares it')
+      await actions.reload()
+      assert.equal(store.getSnapshot().dirty, false)
+
+      scopeValue.value.plan = 'max'
+      await actions.reload()
+      assert.equal(store.getSnapshot().fields.plan, 'max', 'the field follows the host again')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
   /**
    * Mount the card and answer its bridge calls from `responses`, leaving the
    * fetch stub installed so a test can drive a control that talks to the host
@@ -1304,9 +1609,13 @@ describe('rendering', () => {
       const state = tab.face.store.getSnapshot()
       assert.notEqual(state.phase, 'saved', 'a refused write is never "saved"')
       assert.match(String(state.error), /plan/)
-      // Nothing moved: the read-back still describes the section as it stands.
-      assert.equal(state.fields.plan, 'goat')
+      // A refused write preserves the draft so the user can retry it.
+      assert.equal(state.fields.plan, 'pro')
+      assert.equal(state.dirty, true)
       assert.equal(scopeValue.value.plan, 'goat')
+      tab.face.actions.discard()
+      assert.equal(tab.face.store.getSnapshot().fields.plan, 'goat')
+      assert.equal(tab.face.store.getSnapshot().dirty, false)
     } finally {
       globalThis.fetch = originalFetch
     }

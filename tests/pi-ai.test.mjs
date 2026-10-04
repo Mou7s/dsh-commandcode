@@ -34,7 +34,7 @@ function applyOp(section, op) {
  * plugin depends on: `describe` returns resolved sections, `mutate` applies
  * path ops, and a write carries the revision it read.
  */
-function fakeSettings({ value = {}, writable = true, registered = true, conflicts = 0, onMutate, entries } = {}) {
+function fakeSettings({ value = {}, writable = true, registered = true, conflicts = 0, onConflict, onMutate, entries } = {}) {
   const state = { value, revision: 7, writes: [], remainingConflicts: conflicts }
   return {
     writable,
@@ -58,6 +58,7 @@ function fakeSettings({ value = {}, writable = true, registered = true, conflict
       if (state.remainingConflicts > 0) {
         state.remainingConflicts -= 1
         state.revision += 1
+        if (onConflict) state.value = onConflict(state.value)
         throw Object.assign(new Error(`namespace "${ns}" changed since it was read`), { code: 'SETTINGS_CONFLICT' })
       }
       onMutate?.(ops)
@@ -320,8 +321,65 @@ describe('upsertProvider', () => {
   })
 })
 
+describe('concurrent settings edits', () => {
+  it('preserves a route created by another writer before retrying', async () => {
+    const settings = fakeSettings({ conflicts: 1, onConflict: () => ({ providers: {
+      k: { apiKeyEnv: 'USER_KEY', baseURL: 'https://proxy.test', displayName: 'Custom', models: [] },
+    } }) })
+    const profile = buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' })
+    const result = await upsertProvider({ settings, key: 'k', profile })
+    assert.equal(result.created, false)
+    assert.equal(settings.value.providers.k.apiKeyEnv, 'USER_KEY')
+    assert.equal(settings.value.providers.k.baseURL, 'https://proxy.test')
+    assert.equal(settings.value.providers.k.displayName, 'Custom')
+    assert.deepEqual(settings.value.providers.k.models, ENTRIES)
+  })
+
+  it('rejects overrides added while an upsert was conflicting', async () => {
+    const settings = fakeSettings({ conflicts: 1, onConflict: () => ({ providers: {
+      k: { modelOverrides: { a: {} } },
+    } }) })
+    await assert.rejects(() => upsertProvider({ settings, key: 'k', profile: { models: ENTRIES } }),
+      (error) => error.code === SYNC_CODES.overrides)
+    assert.equal(settings.writes.length, 1)
+  })
+
+  it('protects overrides added while a deletion was conflicting', async () => {
+    const key = 'commandcode-pro-autosync'
+    const settings = fakeSettings({ value: { providers: { [key]: { models: [] } } }, conflicts: 1,
+      onConflict: () => ({ providers: { [key]: { modelOverrides: { a: {} } } } }) })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat' })
+    assert.deepEqual(result.removed, [])
+    assert.deepEqual(result.protected, [key])
+    assert.ok(settings.value.providers[key])
+    assert.equal(settings.writes.length, 1)
+  })
+})
+
 describe('syncPlan', () => {
   const routes = { openai: ENTRIES, anthropic: [], responses: [] }
+
+  it('validates every channel before writing the tier', async () => {
+    const settings = fakeSettings({ value: { providers: {
+      'commandcode-pro-anthropic': { modelOverrides: { a: {} } },
+    } } })
+    await assert.rejects(() => syncPlan({ settings, plan: 'pro', routes: {
+      openai: ENTRIES, anthropic: ENTRIES,
+    } }), (error) => error.code === SYNC_CODES.overrides)
+    assert.equal(settings.writes.length, 0)
+    assert.equal(settings.value.providers['commandcode-pro-autosync'], undefined)
+  })
+
+  it('commits all channels in a single mutation', async () => {
+    const settings = fakeSettings()
+    const result = await syncPlan({ settings, plan: 'pro', routes: {
+      openai: ENTRIES, anthropic: ENTRIES,
+    } })
+    assert.equal(settings.writes.length, 1)
+    assert.equal(result.routes.length, 2)
+    assert.ok(settings.value.providers['commandcode-pro-anthropic'])
+    assert.ok(settings.value.providers['commandcode-pro-autosync'])
+  })
 
   it('writes the routes that hold models and reports the empty ones as skipped', async () => {
     const settings = fakeSettings()
@@ -376,6 +434,29 @@ describe('sectionsReferencing', () => {
 
   it('never reports the provider section it just wrote to', () => {
     assert.deepEqual(sectionsReferencing({ describe: () => [{ ns: LLM_PI_AI_NS, value: { providers: { 'commandcode-goat-autosync': {} } } }] }, ['commandcode-goat-autosync']), [])
+  })
+
+  it('skips a renamed provider section and matches complete keys', () => {
+    const key = 'commandcode-goat-autosync'
+    const settings = { describe: () => [
+      { ns: 'renamed-pi', schema: { dict: { providers: {} } }, value: { providers: { [key]: {} } } },
+      { ns: 'other', value: { provider: `${key}-custom` } },
+      { ns: 'default-model', value: { provider: key } },
+    ] }
+    assert.deepEqual(sectionsReferencing(settings, [key]), [`default-model: ${key}`])
+  })
+
+  it('also catches a route written as one provider-qualified model id', () => {
+    // `"commandcode-goat-autosync/deepseek/deepseek-v4.1-flash"` names the same
+    // route as the two-field form, and the profile is not the only place that
+    // can hold it. A key that merely *starts* the same way still must not match.
+    const key = 'commandcode-goat-autosync'
+    const settings = { describe: () => [
+      { ns: 'qualified', value: { model: `${key}/deepseek/deepseek-v4.1-flash` } },
+      { ns: 'similar', value: { model: `${key}-2/deepseek/deepseek-v4.1-flash` } },
+      { ns: 'bare-prefix', value: { note: `${key} rules` } },
+    ] }
+    assert.deepEqual(sectionsReferencing(settings, [key]), [`qualified: ${key}`])
   })
 
   it('answers nothing for nothing, and survives a section it cannot read', async () => {

@@ -293,7 +293,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 
 ```sh
 npm install           # 只需要 @deepseek-ai/schemastery（其实就是 dsh 自带的那份）
-npm test              # 296 个用例，全部离线，不需要网络
+npm test              # 359 个用例，全部离线，不需要网络
 npm run verify:live   # 对真实服务跑一遍：模型列表、目录解析、档位统计、端点探活
 ```
 
@@ -553,7 +553,42 @@ threshold = min(window × 0.8, window − 保留输出 maxTokens − headroom 65
 - **不抢占显式指定的搜索供应商**。
 - **写入前检查 `modelOverrides` 冲突**，而不是让 `llm-pi-ai` 抛一个难懂的校验错误。
 - **结构化错误码**（`fetch-failed` / `settings-read-only` / `provider-plugin-missing` / `target-has-model-overrides` …），卡片直接展示。
-- **296 个离线用例**，外加一份对真实服务的验证脚本。
+- **359 个离线用例**，外加一份对真实服务的验证脚本。
+
+---
+
+### 0.7.7：以可靠性为主的一轮加固
+
+没有新功能，改的全是「出问题时别留下坏状态」。宿主侧与卡片侧各一半，另加一轮独立复核后的收尾修复。
+
+**宿主侧**
+
+- **多协议通道改成一次原子写入**：`syncPlan` 以前逐通道 `mutate`，第二条通道被 `modelOverrides` 拒绝时第一条已经落盘，
+  留下只更新了一半的档位。现在先把所有通道的 op 列表全部算出来（任何一条不合法都在写入前失败），再用一次
+  revision-fenced `mutate` 提交；冲突重试时重新读取 section、重新检查保护条件、重新生成 op 列表。
+- **生命周期取消**：同步、目录预热、账户读取都挂在插件生命周期信号上，卸载后不再发起请求，迟到的结果也不写入；
+  同步与清理共享一个操作锁，重叠调用返回 `sync-busy`，失败后 `finally` 释放。
+- **发现期间改配置**：写入前比较配置签名，只有**这次同步真正读到的字段**变了才返回 `config-changed` ——
+  翻搜索开关、用量工具、guard 比例这类无关字段，不会再把一次有效的同步打断。
+- **账户套餐缓存**：每次读取开始先清空，失败/取消/卸载不再保留上一次的套餐；只有最新一次读取能写缓存。
+- **超长自动同步间隔**：超过原生定时器上限（2³¹−1 ms）时分段等待、保持总间隔；后台定时器 `unref`，不再阻止进程退出。
+- **可选服务卸载后**：工具与搜索的注入在清理时同时移除回调引用，旧服务不会被再次注册。
+
+**卡片侧**
+
+- **草稿就是草稿**：「重新读取」不再丢弃未保存的编辑（丢弃是「放弃修改」按钮的事）；改回宿主原值的编辑不再永久
+  dirty（否则那个字段从此不再跟随宿主刷新）；保存进行中禁用「放弃修改」。
+- **变更之后重新读状态，而不是复用变更之前发出的那一次读取** —— 否则点完「清理」，列表里还留着刚删掉的残留。
+- 卸载后不再发起请求，迟到的 `/describe`、`/usage`、`/sync`、`/prune` 结果都不再写回卡片。
+- `sectionsReferencing` 修好了两处：改名过的供应商区仍被排除，并且能识别 `"<route>/<vendor>/<model>"` 这种单字符串
+  引用，同时不会把 `…-2` 这样的相似 key 误报成引用。
+
+**工程**
+
+- **最低运行时真实验证**：Node 20.0.0 与 Node 24 上 **359 个离线用例全过、零跳过、正常退出**（`npx node@20.0.0 tests/run.mjs`）。
+  `npm test` 改用 `tests/run.mjs` 枚举文件（Node 20 不展开 glob），并为缺 `mock.timers` 的早期 Node 提供 `setTimeout` 兼容层。
+- 发布包补上 `assets/` 与 `screenshots.json`：README 里的五张截图此前不在 `files` 白名单里，装完包看不到。
+- 仍未验收的部分记在 `OPTIMIZATION_PLAN.md`：浏览器实际点击与 HMR 重挂载、真实宿主运行中卸载、付费长会话恢复。
 
 ---
 
@@ -573,7 +608,7 @@ The card lives in the sidebar **Plugins** panel — as an entry in the official 
 
 ```sh
 dsh plugin --profile web add link:<path to this repository>
-npm test            # 296 offline cases
+npm test            # 359 offline cases
 npm run verify:live # probe the real upstreams and account endpoints
 ```
 
