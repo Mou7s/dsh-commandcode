@@ -206,6 +206,28 @@ describe('buildEntries', () => {
     assert.match(go.diagnostics.join(' '), /above the Go tier/)
   })
 
+  it('states, per protocol, what the vendor serves and what was written', () => {
+    // The card has to explain an absent channel, and the two reasons for one are
+    // only distinguishable from these counts: nothing advertises the endpoint,
+    // or models advertise it and every one of them prefers another channel.
+    const { channels } = buildEntries({ apiList, catalog, plan: 'goat' })
+    assert.deepEqual(channels, {
+      openai: { endpoint: '/chat/completions', advertised: 3, assigned: 1 },
+      anthropic: { endpoint: '/messages', advertised: 1, assigned: 0 },
+      responses: { endpoint: '/responses', advertised: 0, assigned: 0 },
+    })
+  })
+
+  it('does not blame the tier for a channel the vendor serves nothing on', () => {
+    // `advertised` counts the live list, not the tier: a model filtered out by
+    // the plan still proves the endpoint exists, which is exactly what the
+    // reader needs to know before being told to buy a bigger subscription.
+    const go = buildEntries({ apiList, catalog, plan: 'go' })
+    assert.equal(go.channels.anthropic.advertised, 1, 'the Pro-tier Claude model still advertises /messages')
+    assert.equal(go.channels.anthropic.assigned, 0)
+    assert.equal(go.channels.openai.assigned, 1)
+  })
+
   it('states capabilities the catalog actually declares', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat' })
     const [model] = routes.openai

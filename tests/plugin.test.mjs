@@ -788,6 +788,14 @@ describe('the sync the bridge drives', () => {
       'commandcode-goat-anthropic': 0,
       'commandcode-goat-responses': 0,
     })
+    // The card explains an absent channel from these counts, so they have to
+    // reach it on the dry run too — the reader decides whether to write at all
+    // based on exactly this report.
+    assert.deepEqual(payload.value.channels, {
+      openai: { endpoint: '/chat/completions', advertised: 1, assigned: 1 },
+      anthropic: { endpoint: '/messages', advertised: 1, assigned: 0 },
+      responses: { endpoint: '/responses', advertised: 0, assigned: 0 },
+    })
   })
 
   it('degrades a dead capability catalog into a diagnostic, not a failure', async () => {

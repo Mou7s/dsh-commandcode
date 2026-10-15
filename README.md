@@ -266,6 +266,9 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 **为什么 goat 档只有一条路由？**
 该档位不含任何 Claude 模型，所以不会生成 Anthropic 路由——空路由会被 `llm-pi-ai` 拒绝。`go` 档同理（Claude 系列最低从 GOAT 档起）。`pro` / `max` 会各生成一条 `commandcode-<档位>-anthropic`。
 
+**为什么从来没有 `commandcode-<档位>-responses` 这条路由？**
+因为上游目录里**没有任何模型只支持 `/responses`**：现在有 70 个模型声明了它，但每一个都同时支持 `/chat/completions`，而本插件在两者都支持时优先走 OpenAI 形状那条。空路由会被 `llm-pi-ai` 拒绝，所以这条通道不会被创建——如果哪天出现只支持 `/responses` 的模型，它会自动出现。同步结果里现在会直接写明是哪种情况：「上游目录里没有任何模型声明 `/responses`」还是「70 个模型声明了 `/responses`，但它们都同时支持优先级更高的通道」。0.7.8 起，卡片不再只写一句「未生成：responses」。
+
 **「设置 → 模型」里出现了两条几乎同名的 Command Code？**
 那是同一档位的两条通道：`commandcode-goat-autosync`（普通模型）与 `commandcode-goat-anthropic`（Claude 模型，上游只在 `/messages` 上服务它们）。0.7.0 起两条通道的显示名不同（`Command | goat` / `Command | goat · Claude`），本插件卡片里则合并成一张卡、用页签切换。harness 自带的「设置 → 模型」是**一条路由一行**，插件无法让那一页合并——所以名字必须能区分。
 

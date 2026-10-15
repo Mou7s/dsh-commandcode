@@ -1663,6 +1663,90 @@ describe('rendering', () => {
     }
   })
 
+  it('says why a protocol channel was not created, not just that it was not', async () => {
+    // "Not generated: responses" is true and useless. The vendor serves 70
+    // models on that protocol — every one of them simply prefers
+    // /chat/completions — so without the count the reader watches a channel
+    // vanish with no explanation, which reads as a dropped feature.
+    useStateValues = statesFor([false, false, null])
+    const mounted = await mountWithCalls({
+      '/describe': DESCRIBE,
+      '/usage': USAGE,
+      '/sync': {
+        plan: 'goat',
+        live: 90,
+        counts: { 'commandcode-goat-autosync': 63, 'commandcode-goat-anthropic': 2 },
+        channels: {
+          openai: { endpoint: '/chat/completions', advertised: 79, assigned: 63 },
+          anthropic: { endpoint: '/messages', advertised: 11, assigned: 2 },
+          responses: { endpoint: '/responses', advertised: 70, assigned: 0 },
+        },
+        skipped: ['responses'],
+        diagnostics: [],
+      },
+    })
+    try {
+      const tab = settingsTab(mounted.registrations)
+      await tab.face.actions.sync()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      assert.match(text, /未生成 responses/)
+      assert.match(text, /70 个模型声明了 \/responses/)
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+      useStateValues = []
+    }
+  })
+
+  it('separates "the vendor serves nothing there" from "they all prefer another channel"', async () => {
+    useStateValues = statesFor([false, false, null])
+    const mounted = await mountWithCalls({
+      '/describe': DESCRIBE,
+      '/usage': USAGE,
+      '/sync': {
+        plan: 'goat',
+        live: 90,
+        counts: {},
+        channels: {
+          openai: { endpoint: '/chat/completions', advertised: 90, assigned: 90 },
+          anthropic: { endpoint: '/messages', advertised: 0, assigned: 0 },
+          responses: { endpoint: '/responses', advertised: 0, assigned: 0 },
+        },
+        skipped: ['anthropic', 'responses'],
+        diagnostics: [],
+      },
+    })
+    try {
+      const tab = settingsTab(mounted.registrations)
+      await tab.face.actions.sync()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      assert.match(text, /未生成 anthropic：上游目录里没有任何模型声明 \/messages/)
+      assert.match(text, /未生成 responses：上游目录里没有任何模型声明 \/responses/)
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+      useStateValues = []
+    }
+  })
+
+  it('keeps the old wording when the report carries no channel counts', async () => {
+    // An older host, or a report that never got that far, must degrade to the
+    // sentence it always printed rather than invent a reason.
+    useStateValues = statesFor([false, false, null])
+    const mounted = await mountWithCalls({
+      '/describe': DESCRIBE,
+      '/usage': USAGE,
+      '/sync': { plan: 'goat', live: 90, counts: {}, skipped: ['responses'], diagnostics: [] },
+    })
+    try {
+      const tab = settingsTab(mounted.registrations)
+      await tab.face.actions.sync()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      assert.match(text, /未生成：responses/)
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+      useStateValues = []
+    }
+  })
+
   it('refuses to create routes for a tier it could not commit', async () => {
     const { entry, react } = await loadBundle()
     const exports = entry.factory(requireFor(react, primitivesShim(react)))
