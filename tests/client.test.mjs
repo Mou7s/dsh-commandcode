@@ -1747,6 +1747,106 @@ describe('rendering', () => {
     }
   })
 
+  it('shows what each written route answered, so a wrong path is visible at write time', async () => {
+    // The card used to be able to say only that its own write succeeded — which
+    // it did, every day, while every Claude request was answering 404.
+    useStateValues = statesFor([false, false, null])
+    const mounted = await mountWithCalls({
+      '/describe': DESCRIBE,
+      '/usage': USAGE,
+      '/sync': {
+        plan: 'goat',
+        live: 90,
+        counts: { 'commandcode-goat-autosync': 63, 'commandcode-goat-anthropic': 2 },
+        channels: {},
+        skipped: [],
+        diagnostics: [],
+        routes: [
+          {
+            key: 'commandcode-goat-autosync',
+            route: 'openai',
+            count: 63,
+            created: false,
+            probe: { route: 'openai', key: 'commandcode-goat-autosync', model: 'vendor/model-one', url: 'https://api.commandcode.ai/provider/v1/chat/completions', ok: true, status: 200, ms: 1180, detail: '{"ok":true}' },
+          },
+          {
+            key: 'commandcode-goat-anthropic',
+            route: 'anthropic',
+            count: 2,
+            created: false,
+            probe: { route: 'anthropic', key: 'commandcode-goat-anthropic', model: 'claude-sonnet-5-5', url: 'https://api.commandcode.ai/provider/v1/messages', ok: false, status: 404, ms: 210, detail: '{"message":"404 Not found. Check the docs for available routes."}' },
+          },
+        ],
+      },
+    })
+    try {
+      const tab = settingsTab(mounted.registrations)
+      await tab.face.actions.sync()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      assert.match(text, /commandcode-goat-autosync：HTTP 200，1\.2 秒/)
+      assert.match(text, /commandcode-goat-anthropic：HTTP 404/)
+      assert.match(text, /检查这条路由的 baseURL/)
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+      useStateValues = []
+    }
+  })
+
+  it('separates "the gateway refused" from "nothing answered at all"', async () => {
+    useStateValues = statesFor([false, false, null])
+    const mounted = await mountWithCalls({
+      '/describe': DESCRIBE,
+      '/usage': USAGE,
+      '/sync': {
+        plan: 'goat',
+        live: 90,
+        counts: {},
+        channels: {},
+        skipped: [],
+        diagnostics: [],
+        routes: [
+          {
+            key: 'commandcode-goat-anthropic',
+            route: 'anthropic',
+            count: 2,
+            created: false,
+            probe: { route: 'anthropic', key: 'commandcode-goat-anthropic', model: 'claude-sonnet-5-5', ok: false, status: 403, ms: 300, detail: '{"error":{"message":"MODEL_NOT_IN_PLAN"}}' },
+          },
+          {
+            key: 'commandcode-goat-autosync',
+            route: 'openai',
+            count: 63,
+            created: false,
+            probe: { route: 'openai', key: 'commandcode-goat-autosync', model: 'vendor/model-one', ok: false, status: null, ms: 10_640, detail: 'Connect Timeout Error (timeout: 10000ms)', error: { kind: 'timeout' } },
+          },
+          {
+            key: 'commandcode-goat-responses',
+            route: 'responses',
+            count: 0,
+            created: true,
+            probe: { route: 'responses', key: 'commandcode-goat-responses', model: 'x', skipped: 'no-credential' },
+          },
+        ],
+      },
+    })
+    try {
+      const tab = settingsTab(mounted.registrations)
+      await tab.face.actions.sync()
+      const text = textOf(tab.component({ ...tab.face })).join(' ')
+      // 403: the path answers, something else was refused.
+      assert.match(text, /HTTP 403/)
+      assert.match(text, /路径是通的/)
+      // No status: the network, stated as the network.
+      assert.match(text, /10640 毫秒内没有 HTTP 应答/)
+      assert.match(text, /这是网络层，不是模型问题/)
+      // Nothing was sent, and the card says that rather than showing a verdict.
+      assert.match(text, /未探测（没有可用的凭据）/)
+    } finally {
+      globalThis.fetch = mounted.originalFetch
+      useStateValues = []
+    }
+  })
+
   it('refuses to create routes for a tier it could not commit', async () => {
     const { entry, react } = await loadBundle()
     const exports = entry.factory(requireFor(react, primitivesShim(react)))

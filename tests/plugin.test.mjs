@@ -798,6 +798,68 @@ describe('the sync the bridge drives', () => {
     })
   })
 
+  it('probes every route it wrote, on the URL that route\u2019s own protocol builds', async () => {
+    // This is the assertion that would have caught the Claude 404 on the day it
+    // shipped: the settings card could only ever report that its own write
+    // succeeded, so nothing noticed that `/provider/v1` + the Anthropic client's
+    // own `/v1/messages` was asking for a path the gateway never registered.
+    const envName = 'CC_ROUTE_PROBE_TEST'
+    const previous = process.env[envName]
+    process.env[envName] = 'fake-key'
+    const probed = []
+    try {
+      const { settings, route } = mount({ plan: 'pro', targetApiKeyEnv: envName })
+      const payload = await withFetch(async (url) => {
+        const target = String(url)
+        if (target.includes('/provider/v1/models')) return { ok: true, status: 200, json: async () => API_BODY }
+        if (target.includes('/docs/plans/')) return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+        probed.push(target)
+        // A gateway that does not serve the Claude path, exactly as Command Code
+        // answers a path it does not register.
+        if (target.endsWith('/messages')) {
+          return { ok: false, status: 404, text: async () => '{"message":"404 Not found. Check the docs for available routes."}' }
+        }
+        return { ok: true, status: 200, text: async () => '{"ok":true}' }
+      }, () => drive(route('/sync')))
+
+      assert.deepEqual(probed.sort(), [
+        'https://api.commandcode.ai/provider/v1/chat/completions',
+        'https://api.commandcode.ai/provider/v1/messages',
+      ], 'the Claude route is probed on the root base, which is what its SDK needs')
+
+      // A route that cannot answer is a fact to report, never a reason to undo
+      // a write the harness may still serve.
+      assert.equal(payload.ok, true)
+      assert.equal(settings.state.mutations.length, 1)
+      const byKey = Object.fromEntries(payload.value.routes.map((entry) => [entry.key, entry.probe]))
+      assert.equal(byKey['commandcode-pro-autosync'].status, 200)
+      assert.equal(byKey['commandcode-pro-autosync'].ok, true)
+      assert.equal(byKey['commandcode-pro-anthropic'].status, 404)
+      assert.equal(byKey['commandcode-pro-anthropic'].ok, false)
+      assert.match(byKey['commandcode-pro-anthropic'].detail, /Not found/)
+      assert.equal(byKey['commandcode-pro-anthropic'].model, 'claude-sonnet-5')
+    } finally {
+      if (previous === undefined) delete process.env[envName]
+      else process.env[envName] = previous
+    }
+  })
+
+  it('names a missing credential instead of probing unauthenticated', async () => {
+    const { settings, route } = mount({ plan: 'pro', targetApiKeyEnv: 'CC_ROUTE_PROBE_ABSENT' })
+    let probed = 0
+    const payload = await withFetch(async (url) => {
+      const target = String(url)
+      if (target.includes('/provider/v1/models')) return { ok: true, status: 200, json: async () => API_BODY }
+      if (target.includes('/docs/plans/')) return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+      probed += 1
+      return { ok: true, status: 200, text: async () => '{"ok":true}' }
+    }, () => drive(route('/sync')))
+    assert.equal(payload.ok, true)
+    assert.equal(probed, 0, 'nothing is sent without a credential')
+    assert.equal(settings.state.mutations.length, 1)
+    assert.deepEqual(payload.value.routes.map((entry) => entry.probe.skipped), ['no-credential', 'no-credential'])
+  })
+
   it('degrades a dead capability catalog into a diagnostic, not a failure', async () => {
     const { route } = mount({ plan: 'goat' })
     const payload = await withFetch(async (url) => (String(url).includes('/provider/v1/models')
