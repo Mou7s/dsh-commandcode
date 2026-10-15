@@ -11,6 +11,7 @@ import {
   parseModelListPayload,
   planCatalogSummary,
   providerKey,
+  routeBaseURL,
   routeForModel,
   routeProtocol,
   slugify,
@@ -131,6 +132,40 @@ describe('routeForModel', () => {
     assert.equal(providerKey('goat', 'openai'), 'commandcode-goat-autosync')
     assert.equal(providerKey('pro', 'anthropic'), 'commandcode-pro-anthropic')
     assert.equal(providerKey('max', 'responses'), 'commandcode-max-responses')
+  })
+})
+
+describe('routeBaseURL', () => {
+  // The Anthropic client appends `/v1/messages` to whatever base it is given.
+  // Handed the same versioned base the OpenAI-shaped routes need, it asks for
+  // `…/provider/v1/v1/messages`, which the gateway answers with
+  // "404 Not found. Check the docs for available routes." — so the Claude route
+  // read as configured while every Claude model was unusable.
+  it('drops the version segment the Anthropic client adds itself', () => {
+    assert.equal(routeBaseURL('anthropic', 'https://api.commandcode.ai/provider/v1'), 'https://api.commandcode.ai/provider')
+    assert.equal(routeBaseURL('anthropic', 'https://api.anthropic.com/v1'), 'https://api.anthropic.com')
+  })
+
+  it('leaves the OpenAI-shaped routes on their versioned base', () => {
+    assert.equal(routeBaseURL('openai', 'https://api.commandcode.ai/provider/v1'), 'https://api.commandcode.ai/provider/v1')
+    assert.equal(routeBaseURL('responses', 'https://api.commandcode.ai/provider/v1'), 'https://api.commandcode.ai/provider/v1')
+  })
+
+  it('is idempotent and tolerant of a trailing slash', () => {
+    const once = routeBaseURL('anthropic', 'https://api.commandcode.ai/provider/v1')
+    assert.equal(routeBaseURL('anthropic', once), once)
+    assert.equal(routeBaseURL('anthropic', 'https://api.commandcode.ai/provider/v1/'), once)
+    assert.equal(routeBaseURL('openai', 'https://gateway.test/v1/'), 'https://gateway.test/v1')
+  })
+
+  it('touches only that exact segment', () => {
+    // A gateway mounted at another version, or at a bare root, is the operator's
+    // decision and must survive: only `/v1` is the Anthropic client's own.
+    assert.equal(routeBaseURL('anthropic', 'https://gateway.test/v2'), 'https://gateway.test/v2')
+    assert.equal(routeBaseURL('anthropic', 'https://gateway.test/provider'), 'https://gateway.test/provider')
+    assert.equal(routeBaseURL('anthropic', 'https://gateway.test/api/v1'), 'https://gateway.test/api')
+    assert.equal(routeBaseURL('anthropic', ''), '')
+    assert.throws(() => routeBaseURL('nope', 'https://gateway.test'), /unknown route/)
   })
 })
 

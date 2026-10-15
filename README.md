@@ -54,7 +54,7 @@ dsh plugin --profile web add link:<本仓库根目录>
 
 这样做的原因是：流式分片、工具调用、思考参数分发、图片处理、历史回放这些逻辑都在 `llm-pi-ai` 里实现并测试过。外部适配器要把同一套协议重新推导一遍，还得跨版本保持正确；而一份 profile 只需要陈述事实——用哪个端点、哪种协议、哪些模型、各自什么能力。
 
-代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步必须**幂等且克制**——它只刷新 `models` 列表，绝不覆盖某条路由上已有的 `apiKeyEnv`、`baseURL`、`compat`；你把密钥填在 **设置 → 模型** 里之后，后续每次同步都不会动它。`displayName` 是唯一的例外，且只改**本插件自己写过**的名字（`Command | <档位>` 这类，含 0.6.x 的旧名 `Command Code GOAT`）：0.6.x 给同一档位的两条路由起了同一个名字，而 harness 的「设置 → 模型」是**一条路由一行**，于是同名的两行看起来像重复的供应商——这正是 0.7.0 要修掉的显示问题。你自己改过的名字不会被覆盖。
+代价是：生成的供应商属于 `llm-pi-ai`，不属于本插件。所以同步必须**幂等且克制**——它只刷新 `models` 列表，绝不覆盖某条路由上已有的 `apiKeyEnv`、`baseURL`、`compat`；你把密钥填在 **设置 → 模型** 里之后，后续每次同步都不会动它。只有两个例外，且都只针对"照原样留着就必然用不了"的值：`displayName` 只改**本插件自己写过**的名字（`Command | <档位>` 这类，含 0.6.x 的旧名 `Command Code GOAT`）——0.6.x 给同一档位的两条路由起了同一个名字，而 harness 的「设置 → 模型」是**一条路由一行**，于是同名的两行看起来像重复的供应商，这正是 0.7.0 要修掉的显示问题；以及 **Claude 路由上以 `/v1` 结尾的 `baseURL`**（见 0.7.8：那个值会让每个 Claude 请求打到 `/provider/v1/v1/messages`，网关一律回 404）。你自己改过的名字、主机名和其他地址都不会被覆盖。
 
 但它不该被藏在一个按钮后面。**`autoSync` 默认开启**：装完重启，插件在十几秒后自己把供应商创建出来，于是 **设置 → 模型** 里有了那一行，也就有了填密钥的地方。这一条是踩出来的——默认关掉时，用户装完插件、重启、打开模型列表，什么都没多出来，插件看起来像装坏了，而不是像在等一个按钮。
 
@@ -234,7 +234,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 | `catalogURL` | `https://commandcode.ai/docs/plans/goat` | 能力目录页。保持默认时按当前档位跟随（Go / GOAT / Pro 各自那一页），Max 页没有该数组，会自动退回到 GOAT 页并在结果里说明；你自己填的地址则原样使用。抓取失败只降级 |
 | `plan` | `goat` | 档位：`go` / `goat` / `pro` / `max` |
 | `targetApiKeyEnv` | `COMMANDCODE_API_KEY` | 生成的路由读取哪把凭据 |
-| `targetBaseURL` | `https://api.commandcode.ai/provider/v1` | 聊天基地址 |
+| `targetBaseURL` | `https://api.commandcode.ai/provider/v1` | 聊天基地址。OpenAI 形状的两条路由原样写入；**Claude 路由会自动去掉结尾的 `/v1`**（Anthropic 客户端自己会拼 `/v1/messages`，带上就是 `/provider/v1/v1/messages` → 404） |
 | `targetCompat` | `{thinkingFormat: "openai", supportsReasoningEffort: true}` | OpenAI 路由的 compat 覆盖 |
 | `extraIds` | `[]` | 目录之外的私有模型 id，写入 OpenAI 路由 |
 | `includeReasoningEfforts` | `false` | 为推理模型写入思考档位映射 |
@@ -282,7 +282,7 @@ dsh plugin --profile dsh-workbench add github:Plocr/dsh-commandcode-goat
 先看卡片最上面有没有一条「宿主半侧还是 v0.6.x 的进程」的提示。有的话就是上面那种混合状态：旧宿主根本不上报各档位的模型数和额度，等多久都不会出现——重启即可。没有那条提示，说明宿主是新的、只是还没读到能力目录（15 秒后的首次同步会读；卡片在打开时也会自己去读一次，所以通常一两秒内就有数字）。
 
 **想改生成供应商的密钥或地址？**
-在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`——唯一的例外是**本插件自己写过的**显示名：0.6.x 的 `Command Code GOAT` 会在下次同步时更新成 `Command | goat`，否则升级后那两条同名的路由会一直留着。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
+在 **设置 → 模型** 里直接改。下次同步只刷新 `models`，不会动你写过的 `apiKeyEnv`、`baseURL`、`compat`、`displayName`——两个例外都是**不能照原样留着**的值：一是**本插件自己写过的**显示名（0.6.x 的 `Command Code GOAT` 会在下次同步时更新成 `Command | goat`，否则升级后那两条同名的路由会一直留着）；二是 **Claude 路由上以 `/v1` 结尾的地址**——那个值永远发不出请求（Anthropic 客户端会拼成 `/provider/v1/v1/messages`，网关回 404），所以只去掉这一段、保留你写的主机名。反过来，如果某个路由上已经写了 `modelOverrides`，同步会拒绝并说明原因——那两者不能共存，插件不会悄悄覆盖你的配置。
 
 **安全性？**
 卡片调用的四个端点都是 POST-only 且仅限本机回环：校验对端地址、`Host` 头，以及（浏览器发送时）`Origin` 必须与之一致，`Sec-Fetch-Site: cross-site` 直接拒绝。密钥不在浏览器里；用量报告是宿主侧读取后的结果。

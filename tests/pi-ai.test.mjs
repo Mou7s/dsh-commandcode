@@ -121,6 +121,20 @@ describe('buildRouteProfile', () => {
     const empty = buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'max', cfg: { targetCompat: {} } })
     assert.deepEqual(empty.compat, DEFAULT_OPENAI_COMPAT)
   })
+
+  it('gives the Claude route the API root, not the versioned base', () => {
+    // The Anthropic client appends `/v1/messages` itself, so the versioned base
+    // it shares with the OpenAI-shaped routes produced `/provider/v1/v1/messages`
+    // — the gateway's 404 — while the route looked correctly configured.
+    const anthropic = buildRouteProfile({ key: 'commandcode-goat-anthropic', route: 'anthropic', entries: ENTRIES, plan: 'goat' })
+    assert.equal(anthropic.baseURL, 'https://api.commandcode.ai/provider')
+    assert.equal(buildRouteProfile({ key: 'k', route: 'openai', entries: ENTRIES, plan: 'goat' }).baseURL, 'https://api.commandcode.ai/provider/v1')
+    assert.equal(buildRouteProfile({ key: 'k', route: 'responses', entries: ENTRIES, plan: 'goat' }).baseURL, 'https://api.commandcode.ai/provider/v1')
+
+    // The same rule holds for a deployment's own base URL.
+    const overridden = buildRouteProfile({ key: 'k', route: 'anthropic', entries: ENTRIES, plan: 'goat', cfg: { targetBaseURL: 'https://gateway.test/v1' } })
+    assert.equal(overridden.baseURL, 'https://gateway.test/v1'.replace(/\/v1$/, ''))
+  })
 })
 
 describe('piAiSection', () => {
@@ -185,6 +199,42 @@ describe('upsertProvider', () => {
     assert.equal(written.baseURL, 'https://my.proxy/v1')
     assert.deepEqual(written.compat, { thinkingFormat: 'deepseek', supportsReasoningEffort: false })
     assert.deepEqual(written.models, ENTRIES)
+  })
+
+  it('repairs the Claude base URL an earlier version of this plugin wrote', async () => {
+    // The route was written with the versioned base, which the Anthropic client
+    // turns into `/provider/v1/v1/messages` — a 404 for every Claude model. That
+    // value is unsatisfiable rather than chosen, so a re-sync replaces it.
+    const settings = fakeSettings({
+      value: {
+        providers: {
+          'commandcode-goat-anthropic': {
+            apiKeyEnv: 'COMMANDCODE_API_KEY',
+            api: 'anthropic-messages',
+            baseURL: 'https://api.commandcode.ai/provider/v1',
+            displayName: 'Command | goat · Claude',
+            models: [],
+          },
+        },
+      },
+    })
+    const profile = buildRouteProfile({ key: 'commandcode-goat-anthropic', route: 'anthropic', entries: ENTRIES, plan: 'goat' })
+    const result = await upsertProvider({ settings, key: 'commandcode-goat-anthropic', profile })
+    assert.equal(result.created, false)
+    assert.equal(settings.value.providers['commandcode-goat-anthropic'].baseURL, 'https://api.commandcode.ai/provider')
+  })
+
+  it('still leaves a Claude base URL the user chose alone', async () => {
+    for (const base of ['https://my.proxy/provider', 'https://my.proxy/v2', 'https://my.proxy/provider/v1/']) {
+      const settings = fakeSettings({
+        value: { providers: { k: { apiKeyEnv: 'A', api: 'anthropic-messages', baseURL: base, displayName: 'Mine', models: [] } } },
+      })
+      await upsertProvider({ settings, key: 'k', profile: buildRouteProfile({ key: 'k', route: 'anthropic', entries: ENTRIES, plan: 'goat' }) })
+      // A base that cannot be served from is repaired; every other answer stands.
+      const expected = base.endsWith('/v1/') ? 'https://my.proxy/provider' : base
+      assert.equal(settings.value.providers.k.baseURL, expected, base)
+      assert.equal(settings.value.providers.k.displayName, 'Mine')
+    }
   })
 
   it('leaves a display name the user chose alone', async () => {
