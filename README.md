@@ -1,4 +1,4 @@
-# Command Code for DeepSeek Harness
+# Command Code for DSH｜订阅接入
 
 [![Release](https://img.shields.io/github/v/release/Plocr/dsh-commandcode-goat)](https://github.com/Plocr/dsh-commandcode-goat/releases)
 [![dsh-market 收录](https://img.shields.io/badge/dsh--market-已收录-4D6BFE)](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/)
@@ -6,7 +6,11 @@
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933)](package.json)
 [![MIT](https://img.shields.io/github/license/Plocr/dsh-commandcode-goat)](LICENSE)
 
-把 **Command Code 的 Go / GOAT / Pro / Max 订阅**接入 DeepSeek Harness（dsh）：自动同步可用模型、查看账户用量，并可用同一把密钥提供联网搜索。
+**一把订阅密钥，在 DeepSeek Harness 中管理模型、用量和联网搜索。**
+
+Command Code for DSH 将 **Command Code 的 Go / GOAT / Pro / Max 订阅**接入 DeepSeek Harness（dsh），自动同步可用模型，支持收藏筛选、推理预设和额度提醒。
+
+对外名称为 **Command Code for DSH｜订阅接入**。为兼容已有安装，仓库地址与安装标识保留 `dsh-commandcode-goat`；插件支持全部四个套餐。
 
 插件将模型发布到官方 `llm-pi-ai` 供应商配置中，流式响应、工具调用、图片与历史重放由 dsh 自带的模型适配器处理。
 
@@ -233,7 +237,7 @@ npm test
 
 ## English
 
-Connect a Command Code **Go / GOAT / Pro / Max** subscription to DeepSeek Harness. The plugin publishes provider profiles to the official `llm-pi-ai` adapter, syncs the model catalog, displays account usage, and optionally provides web search with the same credential.
+**Command Code for DSH** connects a Command Code **Go / GOAT / Pro / Max** subscription to DeepSeek Harness. Manage models, reasoning presets, quota alerts and web search with one subscription key. The plugin publishes provider profiles to the official `llm-pi-ai` adapter. The installation identifier remains `dsh-commandcode-goat` for compatibility.
 
 ```sh
 dsh plugin --profile web add github:Plocr/dsh-commandcode-goat

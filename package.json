@@ -1,7 +1,7 @@
 {
   "name": "dsh-commandcode-goat",
   "version": "0.8.0",
-  "description": "DSH plugin: sync Command Code models with favorites, per-model reasoning, diagnostics, usage alerts and portable settings.",
+  "description": "Command Code for DSH｜订阅接入：同步 Go / GOAT / Pro / Max 模型，管理推理预设、用量提醒与联网搜索。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -25,6 +25,10 @@
     "dsh",
     "dsh-plugin",
     "commandcode",
+    "command-code",
+    "model-sync",
+    "reasoning-presets",
+    "quota-alerts",
     "llm-pi-ai"
   ],
   "repository": {

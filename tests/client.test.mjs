@@ -341,8 +341,8 @@ describe('bundle shape', () => {
       assert.equal(typeof registration.options.label, 'function')
       assert.equal(typeof registration.component, 'function')
     }
-    assert.equal(tab.options.label(), 'Command Code')
-    assert.equal(item.options.label(), 'Command Code 订阅接入')
+    assert.equal(tab.options.label(), 'Command Code for DSH')
+    assert.equal(item.options.label(), 'Command Code for DSH｜订阅接入')
 
     // The settings tab always renders the page; every panel seat answers both
     // views it is dispatched with.
@@ -367,7 +367,7 @@ describe('bundle shape', () => {
     const { ctx, dictionaries } = browserContext()
     exports.apply(ctx)
     assert.deepEqual(Object.keys(dictionaries[NS]), ['zh', 'en'])
-    assert.equal(dictionaries[NS].en.title, 'Command Code subscription')
+    assert.equal(dictionaries[NS].en.title, 'Command Code for DSH')
   })
 
   it('labels the card in the deployment\u2019s language', async () => {
@@ -376,9 +376,9 @@ describe('bundle shape', () => {
     const { ctx, registrations } = browserContext({ locale: 'en' })
     exports.apply(ctx)
     const tab = registrations.find((entry_) => entry_.slot === 'settings.plugins.tab')
-    assert.equal(tab.options.label(), 'Command Code')
+    assert.equal(tab.options.label(), 'Command Code for DSH')
     const item = registrations.find((entry_) => entry_.slot === 'plugins.item')
-    assert.equal(item.options.label(), 'Command Code subscription')
+    assert.equal(item.options.label(), 'Command Code for DSH')
   })
 })
 
