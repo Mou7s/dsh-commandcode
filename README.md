@@ -1,20 +1,20 @@
 # Command Code for DSH｜订阅接入
 
-[![Release](https://img.shields.io/github/v/release/Plocr/dsh-commandcode-goat)](https://github.com/Plocr/dsh-commandcode-goat/releases)
+[![Release](https://img.shields.io/github/v/release/Plocr/dsh-commandcode)](https://github.com/Plocr/dsh-commandcode/releases)
 [![dsh-market 收录](https://img.shields.io/badge/dsh--market-已收录-4D6BFE)](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-339933)](package.json)
-[![MIT](https://img.shields.io/github/license/Plocr/dsh-commandcode-goat)](LICENSE)
+[![MIT](https://img.shields.io/github/license/Plocr/dsh-commandcode)](LICENSE)
 
 **一把订阅密钥，在 DeepSeek Harness 中管理模型、用量和联网搜索。**
 
 Command Code for DSH 将 **Command Code 的 Go / GOAT / Pro / Max 订阅**接入 DeepSeek Harness（dsh），自动同步可用模型，支持收藏筛选、推理预设和额度提醒。
 
-对外名称为 **Command Code for DSH｜订阅接入**。为兼容已有安装，仓库地址与安装标识保留 `dsh-commandcode-goat`；插件支持全部四个套餐。
+对外名称为 **Command Code for DSH｜订阅接入**。仓库名为 `dsh-commandcode`；为兼容已有安装，包名与配置标识继续使用 `dsh-commandcode-goat`。插件支持全部四个套餐。
 
 插件将模型发布到官方 `llm-pi-ai` 供应商配置中，流式响应、工具调用、图片与历史重放由 dsh 自带的模型适配器处理。
 
-**[市场收录页面](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/) · [最新版下载](https://github.com/Plocr/dsh-commandcode-goat/releases/latest) · [反馈问题](https://github.com/Plocr/dsh-commandcode-goat/issues)**
+**[市场收录页面](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/) · [最新版下载](https://github.com/Plocr/dsh-commandcode/releases/latest) · [反馈问题](https://github.com/Plocr/dsh-commandcode/issues)**
 
 ## 快速开始
 
@@ -23,22 +23,24 @@ Command Code for DSH 将 **Command Code 的 Go / GOAT / Pro / Max 订阅**接入
 在 dsh 的「插件 → 添加插件」中粘贴：
 
 ```text
-github:Plocr/dsh-commandcode-goat
+github:Plocr/dsh-commandcode
 ```
 
 也可以安装 Release 包：
 
 ```text
-https://github.com/Plocr/dsh-commandcode-goat/releases/latest/download/dsh-commandcode-goat.tgz
+https://github.com/Plocr/dsh-commandcode/releases/latest/download/dsh-commandcode-goat.tgz
 ```
 
 命令行安装到 Web profile：
 
 ```sh
-dsh plugin --profile web add github:Plocr/dsh-commandcode-goat
+dsh plugin --profile web add github:Plocr/dsh-commandcode
 ```
 
 桌面端请优先使用插件面板。命令行安装时，应选用桌面端实际使用的 profile 和 DSH_HOME，避免装进另一份配置。
+
+仓库已由 `dsh-commandcode-goat` 更名为 `dsh-commandcode`。以下市场链接仍使用原收录地址，待市场同步。
 
 本插件已被 [dsh-market](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/) 收录，也可在已安装的市场中搜索 `dsh-commandcode-goat`。dsh 0.2.1 的「插件 → 发现 → 索引源」可添加以下社区索引后搜索安装（[市场说明](https://dshmarket.com/zh/)）：
 
@@ -212,7 +214,7 @@ dsh web
 - 解释通道缺失原因，区分套餐筛选、端点支持与协议优先级。
 - 包含 v0.7.6–v0.7.7 的上下文保护、同步原子性、取消处理和配置卡片改进。
 
-完整版本记录与安装包见 [Releases](https://github.com/Plocr/dsh-commandcode-goat/releases)。
+完整版本记录与安装包见 [Releases](https://github.com/Plocr/dsh-commandcode/releases)。
 
 ## 开发
 
@@ -240,12 +242,12 @@ npm test
 **Command Code for DSH** connects a Command Code **Go / GOAT / Pro / Max** subscription to DeepSeek Harness. Manage models, reasoning presets, quota alerts and web search with one subscription key. The plugin publishes provider profiles to the official `llm-pi-ai` adapter. The installation identifier remains `dsh-commandcode-goat` for compatibility.
 
 ```sh
-dsh plugin --profile web add github:Plocr/dsh-commandcode-goat
+dsh plugin --profile web add github:Plocr/dsh-commandcode
 ```
 
 Restart the profile when prompted, select your subscription tier, and configure `COMMANDCODE_API_KEY` under **Settings → Models** or in the environment. Version 0.8.0 adds sync previews, favorites/hidden models, per-model reasoning presets, explicit diagnostics, quota/model notifications and portable configuration import/export. Automatic sync is enabled by default and follows saved preferences. Diagnostics are explicit, may consume quota, and never execute returned tools. Multi-account management is deferred.
 
-Listed on [dsh-market](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/). Download the latest package and read release notes on [GitHub Releases](https://github.com/Plocr/dsh-commandcode-goat/releases/latest).
+Listed on [dsh-market](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/). Download the latest package and read release notes on [GitHub Releases](https://github.com/Plocr/dsh-commandcode/releases/latest).
 
 ## License
 

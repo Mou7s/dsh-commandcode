@@ -33,7 +33,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Plocr/dsh-commandcode-goat.git"
+    "url": "git+https://github.com/Plocr/dsh-commandcode.git"
   },
   "license": "MIT",
   "engines": {
