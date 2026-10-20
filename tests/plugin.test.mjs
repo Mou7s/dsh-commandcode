@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { after, describe, it } from 'node:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { enableTimeouts } from './timers.mjs'
 
 import {
@@ -164,6 +167,68 @@ const settle = async () => {
  * timeout after the last assertion and the runner would never exit.
  */
 const mountedEffects = []
+
+describe('generated providers on plugin disposal', () => {
+  it('releases the loader before removing persisted routes', async () => {
+    const key = 'commandcode-goat-autosync'
+    const settings = mockSettings({ entries: [{ ns: LLM_PI_AI, revision: 1,
+      value: { providers: { [key]: { apiKeyEnv: 'COMMANDCODE_API_KEY' }, custom: {} } } }] })
+    const { ctx, effects } = mockContext({ settings })
+    const folder = await mkdtemp(join(tmpdir(), 'goat-dispose-'))
+    settings.documentPath = join(folder, 'profile.yaml')
+    let removed
+    const finished = new Promise((resolve) => { removed = resolve })
+    const mutate = settings.mutate.bind(settings)
+    settings.mutate = async (...args) => { const result = await mutate(...args); removed(); return result }
+    apply(ctx, Config({ autoSync: false }))
+    const dispose = effects.find((effect) => effect.label === 'dsh-commandcode-goat: generated providers').dispose
+    // The disposer must not return a settings write promise: the real host
+    // invokes it while holding the same lock settings.mutate needs.
+    assert.equal(dispose(), undefined)
+    assert.equal(settings.state.mutations.length, 0)
+    await finished
+    assert.deepEqual(settings.state.mutations[0].ops, [{ op: 'unset', path: ['providers', key] }])
+    await rm(folder, { recursive: true, force: true })
+  })
+
+  it('cleans up after a settings write that finishes during disposal', async () => {
+    const providers = {}
+    const settings = mockSettings({ entries: [{ ns: LLM_PI_AI, revision: 1, value: { providers } }] })
+    const folder = await mkdtemp(join(tmpdir(), 'goat-dispose-flight-'))
+    settings.documentPath = join(folder, 'profile.yaml')
+    let cleaned
+    const cleanup = new Promise((resolve) => { cleaned = resolve })
+    let release
+    let started
+    const written = new Promise((resolve) => { started = resolve })
+    const gate = new Promise((resolve) => { release = resolve })
+    const mutate = settings.mutate.bind(settings)
+    settings.mutate = async (ns, ops, revision) => {
+      if (ops.some((op) => op.op === 'set')) { started(); await gate }
+      for (const op of ops) {
+        if (op.op === 'unset') delete providers[op.path[1]]
+        else providers[op.path[1]] = op.value
+      }
+      if (ops.some((op) => op.op === 'unset')) cleaned()
+      return mutate(ns, ops, revision)
+    }
+    const webServer = mockWebServer()
+    const { ctx, effects } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'goat', autoSync: false }))
+    await withFetch(upstreamFetch(), async () => {
+      const sync = webServer.state.routes.find((route) => route.path.endsWith('/sync'))
+        .handler(bridgeRequest(), bridgeResponse())
+      await written
+      for (const effect of [...effects].reverse()) effect.dispose?.()
+      release()
+      await sync
+      await cleanup
+    })
+    assert.deepEqual(providers, {})
+    assert.ok(settings.state.mutations.some((write) => write.ops.some((op) => op.op === 'unset')))
+    await rm(folder, { recursive: true, force: true })
+  })
+})
 
 after(() => {
   for (const dispose of mountedEffects.splice(0)) {
@@ -365,6 +430,7 @@ describe('apply', () => {
       `${BRIDGE_PREFIX}/sync`,
       `${BRIDGE_PREFIX}/prune`,
       `${BRIDGE_PREFIX}/usage`,
+      `${BRIDGE_PREFIX}/manage`,
     ])
     assert.equal(web.state.providers.length, 1)
     assert.equal(web.state.providers[0].id, 'commandcode')
@@ -402,6 +468,7 @@ describe('apply', () => {
       `${BRIDGE_PREFIX}/sync`,
       `${BRIDGE_PREFIX}/prune`,
       `${BRIDGE_PREFIX}/usage`,
+      `${BRIDGE_PREFIX}/manage`,
     ])
   })
 
@@ -620,7 +687,7 @@ function bridgeRequest(body = '{}') {
     socket: { remoteAddress: '127.0.0.1' },
     headers: { host: '127.0.0.1:3080' },
     async *[Symbol.asyncIterator]() {
-      yield Buffer.from(body)
+      yield Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))
     },
   }
 }
@@ -820,7 +887,7 @@ describe('the sync the bridge drives', () => {
           return { ok: false, status: 404, text: async () => '{"message":"404 Not found. Check the docs for available routes."}' }
         }
         return { ok: true, status: 200, text: async () => '{"ok":true}' }
-      }, () => drive(route('/sync')))
+      }, () => drive(route('/sync'), { diagnose: true }))
 
       assert.deepEqual(probed.sort(), [
         'https://api.commandcode.ai/provider/v1/chat/completions',
@@ -844,6 +911,65 @@ describe('the sync the bridge drives', () => {
     }
   })
 
+  it('probes a route with the credential that route names, never this plugin\u2019s own', async () => {
+    // A reader who points one route at another gateway also gives it another key.
+    // Probing it with the plugin's key would hand a credential to a service it
+    // was never issued for — something the harness itself never does.
+    const own = 'CC_PROBE_OWN'
+    const other = 'CC_PROBE_OTHER'
+    const saved = [process.env[own], process.env[other]]
+    process.env[own] = 'own-secret'
+    process.env[other] = 'other-secret'
+    try {
+      const settings = mockSettings({
+        entries: [
+          {
+            ns: LLM_PI_AI,
+            revision: 1,
+            value: {
+              providers: {
+                'commandcode-pro-autosync': { api: 'openai-completions', apiKeyEnv: other, baseURL: 'https://my.proxy/v1', models: [] },
+              },
+            },
+            schema: { type: 'object', dict: { providers: {} } },
+          },
+          { ns: 'commandcode-goat', revision: 1, value: {} },
+        ],
+      })
+      const webServer = mockWebServer()
+      const { ctx } = mockContext({ settings, webServer })
+      apply(ctx, Config({ plan: 'pro', targetApiKeyEnv: own }))
+      const entry = webServer.state.routes.find((candidate) => candidate.path === `${BRIDGE_PREFIX}/sync`)
+
+      const sent = []
+      const payload = await withFetch(async (url, init) => {
+        const target = String(url)
+        if (target.includes('/provider/v1/models')) return { ok: true, status: 200, json: async () => API_BODY }
+        if (target.includes('/docs/plans/')) return { ok: true, status: 200, text: async () => goatPage(CATALOG_ENTRIES) }
+        sent.push({ url: target, headers: init?.headers ?? {}, redirect: init?.redirect })
+        return { ok: true, status: 200, text: async () => '{}' }
+      }, () => drive(entry, { diagnose: true }))
+
+      assert.equal(payload.ok, true)
+      const proxy = sent.find((call) => call.url === 'https://my.proxy/v1/chat/completions')
+      assert.ok(proxy, 'the route the reader repointed is probed where it points')
+      assert.equal(proxy.headers.authorization, 'Bearer other-secret')
+      for (const call of sent.filter((candidate) => candidate.url.startsWith('https://my.proxy'))) {
+        assert.equal(JSON.stringify(call.headers).includes('own-secret'), false, 'this plugin\u2019s key never reaches another host')
+      }
+      const claude = sent.find((call) => call.url === 'https://api.commandcode.ai/provider/v1/messages')
+      assert.ok(claude)
+      assert.equal(claude.headers['x-api-key'], 'own-secret')
+      // A redirect is a verdict, not a place to forward `x-api-key` to.
+      assert.deepEqual([...new Set(sent.map((call) => call.redirect))], ['manual'])
+    } finally {
+      for (const [index, name] of [own, other].entries()) {
+        if (saved[index] === undefined) delete process.env[name]
+        else process.env[name] = saved[index]
+      }
+    }
+  })
+
   it('names a missing credential instead of probing unauthenticated', async () => {
     const { settings, route } = mount({ plan: 'pro', targetApiKeyEnv: 'CC_ROUTE_PROBE_ABSENT' })
     let probed = 0
@@ -857,17 +983,17 @@ describe('the sync the bridge drives', () => {
     assert.equal(payload.ok, true)
     assert.equal(probed, 0, 'nothing is sent without a credential')
     assert.equal(settings.state.mutations.length, 1)
-    assert.deepEqual(payload.value.routes.map((entry) => entry.probe.skipped), ['no-credential', 'no-credential'])
+    assert.deepEqual(payload.value.routes.map((entry) => entry.probe), [undefined, undefined])
   })
 
-  it('degrades a dead capability catalog into a diagnostic, not a failure', async () => {
-    const { route } = mount({ plan: 'goat' })
+  it('does not publish unscoped models when the initial capability catalog is unavailable', async () => {
+    const { settings, route } = mount({ plan: 'goat' })
     const payload = await withFetch(async (url) => (String(url).includes('/provider/v1/models')
       ? { ok: true, status: 200, json: async () => API_BODY }
       : { ok: false, status: 500, statusText: 'Server Error' }), () => drive(route('/sync')))
-    assert.equal(payload.ok, true)
-    assert.equal(payload.value.catalog.available, false)
-    assert.match(payload.value.diagnostics.join('\n'), /capability catalog could not be read/)
+    assert.equal(payload.ok, false)
+    assert.equal(payload.code, 'catalog-unavailable')
+    assert.equal(settings.state.mutations.length, 0)
   })
 
   it('reports an unreachable model list as a coded failure', async () => {
@@ -912,7 +1038,9 @@ describe('the sync the bridge drives', () => {
     })
     const webServer = mockWebServer()
     const { ctx } = mockContext({ settings, webServer })
-    apply(ctx, Config({ plan: 'pro' }))
+    const config = { plan: 'goat' }
+    apply(ctx, config)
+    config.plan = 'pro'
     const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/sync`)
 
     const payload = await withFetch(upstreamFetch(), () => drive(route))
@@ -1113,12 +1241,12 @@ describe('the usage tool', () => {
     apply(ctx, Config({}))
     let calls = 0
     let aborted = false
-    await withFetch(async (_url, { signal }) => {
+    await assert.rejects(withFetch(async (_url, { signal }) => {
       calls += 1
       for (const effect of [...effects].reverse()) effect.dispose?.()
       aborted = signal.aborted
       throw signal.reason
-    }, () => tools.state.tools[0].execute({}, {}))
+    }, () => tools.state.tools[0].execute({}, {})), { code: 'account-changed' })
     assert.equal(aborted, true)
     assert.equal(calls, 1)
   })
@@ -1130,10 +1258,11 @@ describe('the usage tool', () => {
     const originalKey = process.env.COMMANDCODE_API_KEY
     process.env.COMMANDCODE_API_KEY = 'cmd_test'
     try {
-      const text = await withFetch(async () => ({
+      const text = await withFetch(async (url) => ({
         ok: true,
         status: 200,
-        json: async () => ({
+        json: async () => String(url).endsWith('/credits') ? { credits: {} }
+          : String(url).endsWith('/subscriptions') ? { data: { planId: 'individual-goat' } } : ({
           user: { id: 'u1', userName: 'ada' },
           planId: 'individual-goat',
           totalCount: 4,

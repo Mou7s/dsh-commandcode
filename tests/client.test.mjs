@@ -46,7 +46,7 @@ let useStateValues = []
  * however many times a test renders.
  */
 function statesFor([advanced, providers, tab], renders = 6) {
-  return Array.from({ length: renders }, () => [advanced, providers, tab]).flat()
+  return Array.from({ length: renders }, () => [advanced, providers, tab, '', 'all', '', 'connection', 'merge']).flat()
 }
 
 function reactShim() {
@@ -195,6 +195,17 @@ function textOf(node) {
   return textOf(node.children ?? [])
 }
 
+/** Browser-visible text: hidden tabs and unopened disclosures expose no fields. */
+function visibleText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return []
+  if (typeof node === 'string' || typeof node === 'number') return [String(node)]
+  if (Array.isArray(node)) return node.flatMap(visibleText)
+  if (typeof node.type === 'function') return visibleText(node.type(node.props))
+  if (node.props?.hidden) return []
+  if (node.type === 'details' && !node.props.open) return visibleText((node.children ?? []).filter((child) => child?.type === 'summary'))
+  return visibleText(node.children ?? [])
+}
+
 /** Wait for the card's initial bridge reads to settle. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -269,6 +280,18 @@ function findByClass(node, className, found = []) {
 }
 
 describe('bundle shape', () => {
+  it('replaces the existing stylesheet when an updated client module is loaded', async () => {
+    const { entry } = await loadBundle()
+    const previousDocument = globalThis.document
+    const tag = { dataset: {}, textContent: 'old stylesheet' }
+    globalThis.document = { querySelector: () => tag, head: { appendChild() { assert.fail('must reuse the existing stylesheet') } } }
+    try {
+      entry.factory(() => reactShim())
+      assert.match(tag.textContent, /ccg-modelList/)
+      assert.notEqual(tag.textContent, 'old stylesheet')
+    } finally { globalThis.document = previousDocument }
+  })
+
   it('registers under the package name and injects only the services it uses', async () => {
     const { entry } = await loadBundle()
     // The bundle's module id is its package name; the settings *section* it
@@ -422,6 +445,58 @@ describe('rendering', () => {
       globalThis.fetch = originalFetch
     }
   })
+  it('replaces an early missing-bridge status after management confirms host readiness', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations } = browserContext()
+    const before = fetch
+    let reads = 0
+    globalThis.fetch = async (url) => {
+      if (String(url).endsWith('/describe')) {
+        reads++
+        if (reads === 1) return { ok: false, status: 404 }
+        return { ok: true, json: async () => ({ ok: true, value: { version: '0.8.0', entryId: NS } }) }
+      }
+      return { ok: true, json: async () => ({ ok: true, value: {} }) }
+    }
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      assert.equal(registrations[0].face.store.getSnapshot().status.version, '0.8.0')
+      assert.equal(registrations[0].face.store.getSnapshot().statusError, null)
+      assert.ok(reads >= 2)
+    } finally { globalThis.fetch = before }
+  })
+
+  it('uses one atomic mutation for a multi-field draft when the host supports it', async () => {
+    const { entry, react } = await loadBundle()
+    const { ctx, registrations, scopeValue } = browserContext({ acceptWrites: true })
+    const originalGet = ctx.configForms.get
+    const batches = []
+    ctx.configForms.get = (id) => {
+      const scope = originalGet(id)
+      scope.mutate = async (ops) => {
+        batches.push(ops)
+        for (const op of ops) scopeValue.value = { ...scopeValue.value, [op.path[0]]: op.value }
+        return true
+      }
+      scope.set = async () => { throw new Error('individual writes must not run') }
+      return scope
+    }
+    const before = globalThis.fetch
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ ok: true, value: {} }) })
+    try {
+      entry.factory(() => react).apply(ctx)
+      await settle()
+      const { actions, store } = registrations[0].face
+      actions.edit('plan', 'pro')
+      actions.edit('webSearch', true)
+      assert.equal(await actions.save(), 0)
+      assert.equal(batches.length, 1)
+      assert.deepEqual(batches[0].map((op) => op.path[0]).sort(), ['plan', 'webSearch'])
+      assert.equal(store.getSnapshot().dirty, false)
+    } finally { globalThis.fetch = before }
+  })
+
   it('keeps new edits made while a save is awaiting the host', async () => {
     const { entry, react } = await loadBundle()
     const { ctx, registrations, scopeValue } = browserContext({ acceptWrites: true })
@@ -705,6 +780,62 @@ describe('rendering', () => {
   /** The sidebar panel's entry, which is dispatched per view. */
   const panelItem = (registrations) => registrations.find((entry_) => entry_.slot === 'plugins.item')
 
+  it('opens a compact overview and keeps detailed controls in their own sections', async () => {
+    const { component, face } = panelItem(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const render = () => component({ ...face, view: 'page' })
+    const text = () => visibleText(render()).join(' ')
+    assert.match(text(), /订阅档位/)
+    assert.doesNotMatch(text(), /模型管理|调用诊断|账户用量|用本账户提供 web_search|配置 JSON|提前剪枝比例/)
+    face.management.actions.navigate('models')
+    assert.match(text(), /模型管理|调用诊断/)
+    assert.doesNotMatch(text(), /每次诊断发送|开始诊断|订阅档位|账户用量|配置 JSON/)
+    face.management.actions.navigate('account')
+    assert.match(text(), /账户用量/)
+    assert.match(text(), /提醒设置/)
+    assert.doesNotMatch(text(), /5 小时用量提醒 %|模型管理|配置 JSON/)
+    face.management.actions.navigate('settings')
+    assert.match(text(), /用本账户提供 web_search/)
+    assert.match(text(), /配置导出与恢复|上下文保护/)
+    assert.doesNotMatch(text(), /配置 JSON|提前剪枝比例|模型管理|账户用量|订阅档位/)
+  })
+
+  it('supports keyboard navigation between settings sections', async () => {
+    const { component, face } = panelItem(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
+    const tabs = findByClass(component({ ...face, view: 'page' }), 'ccg-pageTab')
+    assert.equal(tabs.length, 4)
+    assert.deepEqual(tabs.map((tab) => tab.props.tabIndex), [0, -1, -1, -1])
+    let focused
+    tabs[0].props.onKeyDown({ key: 'ArrowRight', preventDefault() {}, currentTarget: { parentElement: {
+      querySelector(selector) { focused = selector; return { focus() {} } },
+    } } })
+    assert.equal(face.management.store.getSnapshot().view, 'models')
+    assert.equal(focused, '#ccg-page-models')
+    face.management.actions.navigate('unexpected')
+    assert.equal(face.management.store.getSnapshot().view, 'models')
+  })
+
+  it('does not overwrite a saved model preference with a late background refresh', async () => {
+    const { face } = panelItem(await mount({ '/describe': DESCRIBE, '/usage': USAGE, '/manage': { models: [], onlyFavorites: false } }))
+    const originalFetch = globalThis.fetch
+    let finishRead
+    globalThis.fetch = async (url, options) => {
+      const path = String(url).replace('/api/dsh-commandcode-goat', '')
+      if (path === '/manage' && JSON.parse(options.body).action === 'state') {
+        return new Promise((resolve) => { finishRead = () => resolve({ ok: true, json: async () => ({ ok: true, value: { models: [], onlyFavorites: false } }) }) })
+      }
+      return { ok: true, json: async () => ({ ok: true, value: path === '/manage' ? { models: [], onlyFavorites: true } : DESCRIBE }) }
+    }
+    try {
+      const pending = face.management.actions.refresh()
+      await settle()
+      await face.management.actions.options({ onlyFavorites: true })
+      assert.equal(face.management.store.getSnapshot().data.onlyFavorites, true)
+      finishRead()
+      await pending
+      assert.equal(face.management.store.getSnapshot().data.onlyFavorites, true)
+    } finally { globalThis.fetch = originalFetch }
+  })
+
   /**
    * The four tiers, verbatim from the frozen 0.7.0 bridge contract: quota and
    * documentation per tier, which tier the config is on, and which tier the
@@ -853,7 +984,7 @@ describe('rendering', () => {
   })
 
   /** The tabs of the merged provider card, in strip order. */
-  const tabsOf = (tree) => findAll(tree, 'button').filter((node) => node.props.role === 'tab')
+  const tabsOf = (tree) => findAll(tree, 'button').filter((node) => node.props.role === 'tab' && node.props.className !== 'ccg-pageTab')
   /** The tier cards, in the order the host stated them. */
   const tierNodes = (tree) => findByClass(tree, 'ccg-tier')
 
@@ -1337,7 +1468,7 @@ describe('rendering', () => {
     useStateValues = statesFor([true, false, null])
     try {
       const tree = component({ ...face })
-      const labels = findAll(tree, 'label')
+      const labels = findAll(findByClass(tree, 'ccg-root')[0], 'label')
       const ids = labels.map((node) => node.props.htmlFor)
       assert.ok(ids.length >= 6, 'every advanced field has a real label')
       for (const id of ids) assert.match(id, /^ccg-field-/)

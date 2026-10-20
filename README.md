@@ -48,6 +48,10 @@ https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json
 
 打开「插件 → 已安装 → dsh-commandcode-goat」的配置页，选择与你账户一致的 `Go`、`GOAT`、`Pro` 或 `Max`，点击「创建 / 更新」。默认选择 `GOAT`；读取账户订阅后会提示档位差异，但不会自动替你切换。
 
+0.8.0 的手动更新先展示新增、移除和更新预览，点击「确认应用」才写入。模型管理中可收藏、隐藏模型，开启「仅同步收藏」，并逐模型设置推理预设、窗口和输出上限。自动同步仍按已保存的选择定时执行；需要完全手动确认时关闭自动同步。
+
+配置页分为「概览 / 模型 / 用量与提醒 / 设置」：首页只展示套餐与同步；诊断、提醒阈值、配置迁移和上下文参数按需展开。
+
 ### 3. 配置密钥并选择模型
 
 在「设置 → 模型」中找到生成的 `Command | <档位>` 供应商，填写 Command Code API Key 并保存，然后在会话中选择模型。
@@ -67,35 +71,48 @@ dsh web
 |---|---|
 | 模型同步 | 合并网关实时模型列表与套餐能力目录，按档位筛选并生成供应商 |
 | 协议分流 | 根据模型支持的端点选择 OpenAI Chat、Anthropic Messages 或 OpenAI Responses |
-| 调用诊断 | 同步后对各条生成路由发送最小请求，展示 HTTP 状态、耗时和错误详情 |
+| 同步预览 | 确认前展示新增、移除与能力变化；配置或目录变化后拒绝过期预览 |
+| 自选模型 | 收藏、隐藏、仅同步收藏；支持逐模型窗口、输出上限和推理预设 |
+| 调用诊断 | 显式选择已发布模型，分别测试连接、流式响应或工具调用；支持取消 |
 | 账户用量 | 展示账户、组织、生效订阅、5 小时与每周窗口、余额及请求和 Token 汇总 |
+| 额度提醒 | 可选后台每分钟检查用量窗口和余额，跨阈值时记录通知，避免重复提醒 |
+| 模型通知 | 同步后记录模型新增、移除、能力及名称优惠标记变化，支持已读与清空 |
+| 配置迁移 | JSON 导出、合并或替换导入，先校验和预览；排除凭据、接口与请求头 |
 | 联网搜索 | 可选用 Command Code 账户提供 `web_search`，默认关闭 |
 | 用量工具 | 默认注册 `commandcode_usage`，让模型读取账户用量 |
 | 长会话恢复 | 在高上下文压力时尝试剪枝；对特定网关拒绝尝试减少上下文后重试 |
 | 档位清理 | 手动同步后可清理旧档位的生成路由，并提示仍在引用它们的配置 |
 
-路由探测会产生真实的模型请求，可能计入账户用量。探测结果用于诊断，不代表该路由下所有模型、长上下文和工具调用都已验证。
+每次主动诊断发送 1 次真实模型请求，可能计入账户用量。工具诊断只检查模型返回的工具调用，不执行工具。普通同步和后台同步不自动发起模型诊断；诊断成功也不代表所有模型或长会话已验证。
 
 ## 界面预览
 
-以下为 0.7.5 的界面截图，账户信息与用量数字已打码；当前版本的诊断信息可能有所不同。
+**0.8.0 分区首页**（隔离 Web profile、本地模拟模型数据）：
 
-**套餐与模型通道**
+![0.8.0 分区首页](assets/settings-overview-0.8.0.png)
 
-![套餐与模型通道](assets/subscription-tiers.png)
+**同步预览**：
 
-**生成的模型供应商**
+![0.8.0 同步预览](assets/sync-preview-0.8.0.png)
 
-![生成的供应商](assets/generated-providers.png)
+**模型管理**（英文推理选项；长列表内部滚动、固定表头）：
 
-**账户用量**
+![0.8.0 模型管理](assets/model-management-0.8.0.png)
 
-![账户用量](assets/account-usage.png)
+**用量与提醒**：
+
+![0.8.0 用量与提醒](assets/account-usage-0.8.0.png)
+
+**设置**（高级功能按需展开）：
+
+![0.8.0 设置](assets/settings-options-0.8.0.png)
 
 <details>
-<summary>更多截图：选项与插件入口</summary>
+<summary>历史截图：模型供应商与旧版插件入口</summary>
 
-![选项](assets/options.png)
+以下为 0.7.5 历史界面，账户信息已打码。
+
+![生成的供应商](assets/generated-providers.png)
 
 ![插件入口（旧版宿主）](assets/plugins-panel.png)
 
@@ -113,13 +130,14 @@ dsh web
 
 - 一条供应商路由对应一种协议；同一套餐出现多条供应商是正常现象。
 - 只有分配到模型的通道才会创建。模型同时支持 Chat 和 Responses 时优先使用 Chat，因此没有 Responses 路由也可能正常。
-- 能力目录读取失败时会提示降级：仍可生成模型，但无法可靠补充能力与套餐过滤。实时模型列表读取失败则停止同步。
+- 能力目录失败时优先使用同源的最后成功快照；无快照时仅保留已知或明确添加的模型及既有能力。首次没有可信目录则停止创建，避免误发布高档位模型。实时模型列表失败则停止同步。
 - 默认启动后自动同步，并每 6 小时刷新一次。后台同步不删除旧档位路由。
+- 关闭或卸载插件后会清理生成的供应商，模型不再继续列出。清理前将路由配置备份到当前 profile 配置文件旁的 `*.commandcode-goat-backup.json`；重新启用时先恢复，因此关闭自动同步也能恢复原配置。账户密钥与其他供应商不受影响。备份可能包含你自定义的请求头，请像配置文件一样妥善保管。
 - 手动「创建 / 更新」后默认清理其他档位的生成路由。带非空 `modelOverrides` 的路由会被保留并报告；可用 `pruneOtherPlans: false` 关闭清理。
-- 同步会重写生成路由的 `models` 列表。在「设置 → 模型」手动编辑其中的模型能力或推理档位，后续同步可能覆盖这些修改。
+- 同步将当前模型字段与上次生成基线比较，保留明确的窗口、输入、输出上限、推理和兼容设置修改；模型管理中的明确覆盖优先。隐藏模型才会持续排除，直接删除生成列表中的一项仍可能在下次目录同步中重新发现。
 - 已有的凭据引用、协议和非空兼容设置通常会保留。插件会刷新自己生成的显示名，并修正 Claude 路由末尾多余的 `/v1`，避免请求变成 `/v1/v1/messages`。
 
-推理模型默认不生成额外的推理档位映射。`includeReasoningEfforts` 为可选开关，启用后写入 `low/medium/high/xhigh/max` 映射；能力目录并未证明每个模型都接受这些值，调用支持以网关为准。
+自定义供应商在新宿主中无法自动继承内置目录的推理能力。对目录声明支持推理的模型，默认写入 `off/medium`；`includeReasoningEfforts` 开启后提供 `off/low/medium/high`。这些值是协议惯例，未经逐模型网关验证。逐模型支持默认、关闭、均衡、深入和自定义映射，不再统一写入 `xhigh/max`。
 
 ## 常用配置
 
@@ -135,6 +153,10 @@ dsh web
 | `webSearch` | `false` | 使用 Command Code 提供联网搜索 |
 | `enableUsageTool` | `true` | 注册 `commandcode_usage` |
 | `includeReasoningEfforts` | `false` | 为推理模型生成档位映射 |
+| `modelPreferences` | `{}` | 按模型 ID 保存收藏、隐藏、推理预设及能力覆盖 |
+| `onlyFavorites` | `false` | 仅发布已收藏且未隐藏的模型 |
+| `alertThresholds` | 关闭；80% / 80% / $5 | 用量窗口及余额提醒阈值 |
+| `modelChangeNotifications` | `true` | 记录后续成功同步的模型变化 |
 | `recoverUpstreamOverflow` | `true` | 特定网关拒绝后的上下文恢复与重试 |
 | `contextGuardRatio` | `0.7` | 请求前剪枝的压力比例；`0` 关闭该保护 |
 | `maxContextWindow` | `0` | 写入模型的窗口上限；`0` 保留上游声明 |
@@ -155,7 +177,7 @@ dsh web
 
 **同步成功，模型调用仍失败？**
 
-配置写入和实际调用是两件事。查看同步后的通道诊断，并核对 API key、所选套餐和网络。单个探测模型成功也不能证明所有模型都可调用。
+配置写入和实际调用是两件事。在「调用诊断」中选择已发布模型和诊断类型，并核对 API key、所选套餐和网络。单个模型成功也不能证明所有模型都可调用。
 
 **切换套餐后旧供应商还在？**
 
@@ -163,13 +185,23 @@ dsh web
 
 **更新 dsh 后需要改插件吗？**
 
-v0.7.9 使用 dsh 0.1.7 起的设置接口；旧版 0.1.6 用户应使用插件 0.4.8。截至 2026-10-19，已对照 dsh 0.2.1-rc.2 的 provider schema 和上下文恢复接口，未发现必须修改才能加载的接口变化。这是源码核对，尚不代表在该宿主版本完成了真实模型调用验证。
+0.8.0 的验收基线为 dsh 0.2.1-rc.2：已在隔离 Web profile 中验证加载、新界面和启停清理。旧版宿主不在本版实机验收范围内；dsh 0.1.6 用户应继续使用插件 0.4.8。真实付费模型调用与长会话效果尚未验收。
+
+该宿主的热重载事务会阻止卸载期间直接写设置；本版使用运行时检测的事务退出兼容处理，再排队清理。这个处理依赖宿主内部实现，后续 dsh 更新需要复验。正常禁用会备份并移除本实例生成路由；强杀进程或只读配置无法保证清理完成，失败时保留恢复数据。备份恢复成功后会消费，避免再次复活主动删除的路由。
 
 **长会话保护是否保证不超限？**
 
 不保证。插件依赖宿主提供的计量、剪枝和压缩服务，只对自己生成的路由生效。默认保留上游窗口声明；自定义压缩策略、网关限制和模型行为都会影响结果。
 
-## v0.7.9 更新
+## v0.8.0 更新
+
+- 新增同步预览、收藏/隐藏/仅同步收藏、逐模型推理与能力覆盖。
+- 新增连接/流式/工具诊断、额度提醒、模型变化通知、配置导出与恢复。
+- 修复停用残留模型、过期备份复活路由、跨实例误清理及同套餐空通道残留。
+- 修复目录失败导致能力降级、协议冲突、窗口验证、用量解析与账户切换、搜索取消及迟到界面写入。
+- 多账户管理不在本版新增范围。完整执行与验收记录见 [IMPLEMENTATION_0.8.0.md](IMPLEMENTATION_0.8.0.md)。
+
+### v0.7.9
 
 - 修复 Claude 路由重复 `/v1` 导致的 404，并在同步时修正旧配置。
 - 同步后展示通道请求的状态、耗时和错误信息。
@@ -187,7 +219,7 @@ npm install
 npm test
 ```
 
-v0.7.9 发布提交包含 384 项通过的离线测试。真实服务验证脚本为 `npm run verify:live`，需要相应凭据和网络，可能产生调用费用。
+客户端 `lib/client.js` 是直接维护的无构建模块；修改时同时运行前端契约测试并在真实宿主浏览器验收。`npm test` 包含审查回归、领域逻辑与宿主/客户端契约；模拟请求不等同于真实网关调用。真实服务验证脚本为 `npm run verify:live`，需要相应凭据和网络，可能产生调用费用。仓库不跟踪 `package-lock.json`，安装使用声明的依赖范围。
 
 | 文件 | 职责 |
 |---|---|
@@ -207,7 +239,7 @@ Connect a Command Code **Go / GOAT / Pro / Max** subscription to DeepSeek Harnes
 dsh plugin --profile web add github:Plocr/dsh-commandcode-goat
 ```
 
-Restart the profile when prompted, select your subscription tier in the plugin configuration, and configure `COMMANDCODE_API_KEY` under **Settings → Models** or in the environment. Automatic sync is enabled by default. Generated model lists are replaced during sync, so manual model-level edits may be overwritten.
+Restart the profile when prompted, select your subscription tier, and configure `COMMANDCODE_API_KEY` under **Settings → Models** or in the environment. Version 0.8.0 adds sync previews, favorites/hidden models, per-model reasoning presets, explicit diagnostics, quota/model notifications and portable configuration import/export. Automatic sync is enabled by default and follows saved preferences. Diagnostics are explicit, may consume quota, and never execute returned tools. Multi-account management is deferred.
 
 Listed on [dsh-market](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/). Download the latest package and read release notes on [GitHub Releases](https://github.com/Plocr/dsh-commandcode-goat/releases/latest).
 

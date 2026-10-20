@@ -232,7 +232,7 @@ describe('buildEntries', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat' })
     const [model] = routes.openai
     assert.deepEqual(model.input, ['text', 'image'])
-    assert.equal('reasoningEfforts' in model, false)
+    assert.deepEqual(model.reasoningEfforts, { off: null, medium: 'medium' })
     assert.equal(model.name, 'Model One')
     assert.equal(model.contextWindow, 200000)
   })
@@ -248,9 +248,9 @@ describe('buildEntries', () => {
     assert.deepEqual(routes.openai[0].input, ['text'])
   })
 
-  it('writes the identity effort map only when asked', () => {
+  it('offers standard effort conventions when asked without inventing xhigh/max support', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat', includeReasoningEfforts: true })
-    assert.deepEqual(routes.openai[0].reasoningEfforts, { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' })
+    assert.deepEqual(routes.openai[0].reasoningEfforts, { off: null, low: 'low', medium: 'medium', high: 'high' })
   })
 
   it('marks a model the vendor has put on a deal, in its name', () => {

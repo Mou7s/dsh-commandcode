@@ -90,6 +90,36 @@ describe('probeRoutes', () => {
     assert.deepEqual(verdicts.map((verdict) => verdict.skipped), ['no-credential', 'no-credential'])
   })
 
+  it('uses the credential each target names, and never lends one target\u2019s to another', async () => {
+    const { fetch, seen } = stubFetch({ default: { status: 200 } })
+    await probeRoutes({
+      targets: [
+        { ...TARGETS[0], apiKey: 'key-for-openai' },
+        { ...TARGETS[1], apiKey: 'key-for-claude' },
+        { route: 'openai', key: 'unkeyed', baseURL: 'https://elsewhere.test/v1', model: 'm' },
+      ],
+      fetch,
+    })
+    assert.equal(seen[0].init.headers.authorization, 'Bearer key-for-openai')
+    assert.equal(seen[1].init.headers['x-api-key'], 'key-for-claude')
+    assert.equal(seen.length, 2, 'a target with no credential of its own is skipped, not handed someone else\u2019s')
+  })
+
+  it('falls back to the shared key only for a target that names none', async () => {
+    const { fetch, seen } = stubFetch({ default: { status: 200 } })
+    await probeRoutes({ targets: [TARGETS[0], { ...TARGETS[1], apiKey: 'own' }], apiKey: 'shared', fetch })
+    assert.equal(seen[0].init.headers.authorization, 'Bearer shared')
+    assert.equal(seen[1].init.headers['x-api-key'], 'own')
+  })
+
+  it('reports a redirect instead of following it with a key attached', async () => {
+    const { fetch, seen } = stubFetch({ default: { status: 307, text: '' } })
+    const [verdict] = await probeRoutes({ targets: [TARGETS[0]], apiKey: 'K', fetch })
+    assert.equal(seen[0].init.redirect, 'manual')
+    assert.equal(verdict.ok, false)
+    assert.equal(verdict.status, 307)
+  })
+
   it('says nothing about a probe the reader cancelled', async () => {
     const controller = new AbortController()
     controller.abort()

@@ -403,10 +403,10 @@ describe('fetchUsageReport', () => {
     }
   })
 
-  it('reads a success rate given as a fraction as well as one given as a percentage', async () => {
+  it('keeps low percentage values in the endpoint percentage unit', async () => {
     const fraction = stubFetch({ '/alpha/usage/summary': { successRate: 0.95 } })
     try {
-      assert.equal((await fetchUsageReport('key', BASE)).usage.successRate, 0.95)
+      assert.equal((await fetchUsageReport('key', BASE)).usage.successRate, 0.0095)
     } finally {
       fraction.restore()
     }
