@@ -415,6 +415,33 @@ describe('concurrent settings edits', () => {
 describe('syncPlan', () => {
   const routes = { openai: ENTRIES, anthropic: [], responses: [] }
 
+  it('keeps an empty route with hand-edited configuration or models', async () => {
+    const key = 'commandcode-goat-anthropic'
+    for (const customized of [
+      { modelOverrides: { a: { contextWindow: 4096 } } },
+      { baseURL: 'https://custom.example', models: [{ id: 'old' }] },
+      { headers: { 'x-custom': 'value' }, models: [{ id: 'old' }] },
+      { models: [{ id: 'old', contextWindow: 4096 }] },
+    ]) {
+      const settings = fakeSettings({ value: { providers: { [key]: customized } } })
+      const result = await syncPlan({ settings, plan: 'goat', routes,
+        previousInventory: { anthropic: [{ id: 'old', contextWindow: 8192 }] } })
+      assert.deepEqual(result.protected, [key])
+      assert.deepEqual(settings.value.providers[key], customized)
+    }
+  })
+
+  it('refuses a changed provider snapshot on settings conflict retry', async () => {
+    const key = 'commandcode-goat-autosync'
+    const original = { [key]: { models: [{ id: 'old' }] } }
+    const settings = fakeSettings({ value: { providers: structuredClone(original) }, conflicts: 1,
+      onConflict: () => ({ providers: { [key]: { models: [{ id: 'old', contextWindow: 1234 }] } } }) })
+    await assert.rejects(() => syncPlan({ settings, plan: 'goat', routes, expectedProviders: original,
+      staleCode: 'preview-stale' }), { code: 'preview-stale' })
+    assert.equal(settings.value.providers[key].models[0].contextWindow, 1234)
+    assert.equal(settings.writes.length, 1)
+  })
+
   it('validates every channel before writing the tier', async () => {
     const settings = fakeSettings({ value: { providers: {
       'commandcode-pro-anthropic': { modelOverrides: { a: {} } },
@@ -578,6 +605,18 @@ describe('pruneGeneratedRoutes', () => {
     assert.deepEqual(result.protected, ['commandcode-pro-anthropic'])
     assert.ok(settings.value.providers['commandcode-pro-anthropic'] !== undefined)
     assert.ok(!result.removed.includes('commandcode-pro-anthropic'))
+  })
+
+  it('protects custom connection settings and modified models while pruning', async () => {
+    const settings = fakeSettings({ value: { providers: {
+      'commandcode-pro-autosync': { baseURL: 'https://custom.example', models: [{ id: 'a' }] },
+      'commandcode-max-autosync': { models: [{ id: 'a', contextWindow: 1234 }] },
+    } } })
+    const result = await pruneGeneratedRoutes({ settings, plan: 'goat', previousInventories: {
+      pro: { openai: [{ id: 'a' }] }, max: { openai: [{ id: 'a', contextWindow: 8192 }] },
+    } })
+    assert.deepEqual(result.removed, [])
+    assert.deepEqual(result.protected.sort(), ['commandcode-max-autosync', 'commandcode-pro-autosync'])
   })
 
   it('writes nothing when there is nothing stale, and limits itself to the keys it is given', async () => {

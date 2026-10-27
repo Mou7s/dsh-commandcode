@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { evaluateAlerts } from '../lib/account-notifications.js'
 
 import {
   creditLines,
@@ -142,6 +143,40 @@ describe('usageHeaders', () => {
 })
 
 describe('fetchUsageReport', () => {
+  it('accepts a summary containing only the token split', async () => {
+    const stub = stubFetch({ ...HEALTHY, '/alpha/usage/summary': { totalTokensIn: 10, totalTokensOut: 20 } })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.equal(report.usage.totalTokens, 30)
+      assert.equal(report.usage.monthlyCreditsUsedKnown, false)
+      assert.ok(!report.failures.some((failure) => failure.includes('/alpha/usage/summary')))
+    } finally { stub.restore() }
+  })
+
+  it('does not turn missing or invalid balances into a low balance alert', async () => {
+    for (const invalid of [null, '', '  ', false, [], {}, 'not-a-number']) {
+      const stub = stubFetch({ ...HEALTHY, '/alpha/billing/credits': {
+        credits: { monthlyCredits: invalid, purchasedCredits: '0', freeCredits: 0 },
+      } })
+      try {
+        const report = await fetchUsageReport('key', BASE)
+        assert.equal(report.credits.balanceKnown, false)
+        assert.equal(report.credits.monthlyCreditsKnown, false)
+        assert.ok(creditLines(report.credits).includes('balance: unavailable'))
+        assert.deepEqual(evaluateAlerts(report, { enabled: true }).events, [])
+      } finally { stub.restore() }
+    }
+    const stub = stubFetch({ ...HEALTHY, '/alpha/billing/credits': {
+      credits: { monthlyCredits: '0', purchasedCredits: 0, freeCredits: '0' },
+    } })
+    try {
+      const report = await fetchUsageReport('key', BASE)
+      assert.notEqual(report.credits.balanceKnown, false)
+      assert.notEqual(report.credits.monthlyCreditsKnown, false)
+      assert.equal(evaluateAlerts(report, { enabled: true }).events[0].key, 'balance')
+    } finally { stub.restore() }
+  })
+
   it('normalizes the whole surface and asks for the org-scoped subscriptions', async () => {
     const stub = stubFetch(HEALTHY)
     try {

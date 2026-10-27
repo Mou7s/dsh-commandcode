@@ -1,5 +1,7 @@
 # Command Code for DSH｜订阅接入
 
+<img src="assets/logo-native.png" alt="Command Code 插件图标" width="72" align="right">
+
 [![Release](https://img.shields.io/github/v/release/Plocr/dsh-commandcode)](https://github.com/Plocr/dsh-commandcode/releases)
 [![dsh-market 收录](https://img.shields.io/badge/dsh--market-已收录-4D6BFE)](https://dshmarket.com/p/Plocr/dsh-commandcode-goat/)
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
@@ -54,7 +56,7 @@ https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json
 
 打开「插件 → 已安装 → dsh-commandcode-goat」的配置页，选择与你账户一致的 `Go`、`GOAT`、`Pro` 或 `Max`，点击「创建 / 更新」。默认选择 `GOAT`；读取账户订阅后会提示档位差异，但不会自动替你切换。
 
-0.8.0 的手动更新先展示新增、移除和更新预览，点击「确认应用」才写入。模型管理中可收藏、隐藏模型，开启「仅同步收藏」，并逐模型设置推理预设、窗口和输出上限。自动同步仍按已保存的选择定时执行；需要完全手动确认时关闭自动同步。
+手动更新先展示新增、移除和更新预览，点击「确认应用」才写入。模型管理中可收藏、隐藏模型，开启「仅同步收藏」，并逐模型设置推理预设、窗口和输出上限。自动同步仍按已保存的选择定时执行；需要完全手动确认时关闭自动同步。
 
 配置页分为「概览 / 模型 / 用量与提醒 / 设置」：首页只展示套餐与同步；诊断、提醒阈值、配置迁移和上下文参数按需展开。
 
@@ -87,11 +89,13 @@ dsh web
 | 联网搜索 | 可选用 Command Code 账户提供 `web_search`，默认关闭 |
 | 用量工具 | 默认注册 `commandcode_usage`，让模型读取账户用量 |
 | 长会话恢复 | 在高上下文压力时尝试剪枝；对特定网关拒绝尝试减少上下文后重试 |
-| 档位清理 | 手动同步后可清理旧档位的生成路由，并提示仍在引用它们的配置 |
+| 档位清理 | 手动同步后可清理旧档位的生成路由；保护自定义配置和无法确认生成基线的路由，并提示仍在引用已移除路由的配置 |
 
 每次主动诊断发送 1 次真实模型请求，可能计入账户用量。工具诊断只检查模型返回的工具调用，不执行工具。普通同步和后台同步不自动发起模型诊断；诊断成功也不代表所有模型或长会话已验证。
 
 ## 界面预览
+
+以下截图为 0.8.0 的隔离 Web profile 与本地模拟数据；0.8.1 调整了布局、用量文案和插件图标，实际界面以运行结果为准。
 
 **0.8.0 分区首页**（隔离 Web profile、本地模拟模型数据）：
 
@@ -139,8 +143,9 @@ dsh web
 - 能力目录失败时优先使用同源的最后成功快照；无快照时仅保留已知或明确添加的模型及既有能力。首次没有可信目录则停止创建，避免误发布高档位模型。实时模型列表失败则停止同步。
 - 默认启动后自动同步，并每 6 小时刷新一次。后台同步不删除旧档位路由。
 - 关闭或卸载插件后会清理生成的供应商，模型不再继续列出。清理前将路由配置备份到当前 profile 配置文件旁的 `*.commandcode-goat-backup.json`；重新启用时先恢复，因此关闭自动同步也能恢复原配置。账户密钥与其他供应商不受影响。备份可能包含你自定义的请求头，请像配置文件一样妥善保管。
-- 手动「创建 / 更新」后默认清理其他档位的生成路由。带非空 `modelOverrides` 的路由会被保留并报告；可用 `pruneOtherPlans: false` 关闭清理。
+- 手动「创建 / 更新」后默认清理其他档位的生成路由。包含自定义配置、模型手工修改或无法确认生成基线的路由会被保留并报告；可用 `pruneOtherPlans: false` 关闭清理。同套餐的空通道也遵循相同保护。
 - 同步将当前模型字段与上次生成基线比较，保留明确的窗口、输入、输出上限、推理和兼容设置修改；模型管理中的明确覆盖优先。隐藏模型才会持续排除，直接删除生成列表中的一项仍可能在下次目录同步中重新发现。
+- 若同步读取目录期间供应商配置被修改，插件会拒绝使用过期快照写入；手动操作需重新预览并确认。
 - 已有的凭据引用、协议和非空兼容设置通常会保留。插件会刷新自己生成的显示名，并修正 Claude 路由末尾多余的 `/v1`，避免请求变成 `/v1/v1/messages`。
 
 自定义供应商在新宿主中无法自动继承内置目录的推理能力。档位现在按**逐模型事实**写入：官方 CLI 随包发布的模型参考（`command-code-knowledge/reference/models.md`）为每个模型写明支持的档位，同步时读取该表，取不到时用内置快照。网关本身回答不了这个问题——它对认识的每个档位都回 200，并把模型没有的档位悄悄钳掉，所以只能以这张表为准。
@@ -191,7 +196,7 @@ Anthropic 路由额外写入 `compat.forceAdaptiveThinking`：该网关的 Claud
 
 **切换套餐后旧供应商还在？**
 
-执行一次手动同步，或使用配置页的清理操作。后台同步不清理；带 `modelOverrides` 的路由会受到保护。清理后如有默认模型或子代理仍引用旧路由，请一并调整。
+执行一次手动同步，或使用配置页的清理操作。后台同步不清理；包含自定义配置或生成基线未知的路由会受到保护。清理后如有默认模型或子代理仍引用旧路由，请一并调整。
 
 **更新 dsh 后需要改插件吗？**
 
@@ -203,7 +208,14 @@ Anthropic 路由额外写入 `compat.forceAdaptiveThinking`：该网关的 Claud
 
 不保证。插件依赖宿主提供的计量、剪枝和压缩服务，只对自己生成的路由生效。默认保留上游窗口声明；自定义压缩策略、网关限制和模型行为都会影响结果。
 
-## v0.8.0 更新
+## v0.8.1 更新
+
+- 统一配置页各标签宽度，改善窄窗口布局；补充插件图标及中英文名称、简介。
+- 月度额度明确标注已用比例；余额或用量数据不完整时不再推算进度或误发低余额提醒。
+- 保护空通道和旧档位路由中的手工配置；同步期间的并发修改会使过期写入被拒绝。
+- 修复仅返回输入、输出 Token 的用量响应无法识别的问题。
+
+### v0.8.0
 
 - 新增同步预览、收藏/隐藏/仅同步收藏、逐模型推理与能力覆盖。
 - 新增连接/流式/工具诊断、额度提醒、模型变化通知、配置导出与恢复。
@@ -250,7 +262,7 @@ npm test
 dsh plugin --profile web add github:Plocr/dsh-commandcode
 ```
 
-Restart the profile when prompted, select your subscription tier, and configure `COMMANDCODE_API_KEY` under **Settings → Models** or in the environment. Version 0.8.0 adds sync previews, favorites/hidden models, per-model reasoning presets, explicit diagnostics, quota/model notifications and portable configuration import/export. Automatic sync is enabled by default and follows saved preferences. Diagnostics are explicit, may consume quota, and never execute returned tools. Multi-account management is deferred.
+Restart the profile when prompted, select your subscription tier, and configure `COMMANDCODE_API_KEY` under **Settings → Models** or in the environment. Version 0.8.1 improves the settings layout and usage display, adds plugin artwork and localized metadata, and protects customized providers and concurrent edits during sync. Version 0.8.0 introduced sync previews, per-model preferences, explicit diagnostics, notifications and portable settings. Automatic sync follows saved preferences. Diagnostics are explicit, may consume quota, and never execute returned tools. Multi-account management is deferred.
 
 Reasoning efforts are published per model, from the reference the official CLI ships (`command-code-knowledge/reference/models.md`, fetched on sync with a bundled snapshot as fallback). The gateway cannot answer this itself: it returns 200 for every level it recognizes and silently clamps the ones a model does not have, so DeepSeek V4 Pro states `off/high/max`, GLM-5.2 `high/max`, MiniMax M3.1 `low/medium/high/xhigh/max`, and models the reference marks "—" carry no effort selector at all. `off` is written only where the model accepts it, and as the `off` value rather than `null` — `null` means "send no parameter", which does nothing on a model that thinks by default. The `balanced` / `deep` presets resolve against each model's own ladder. The Anthropic route also carries `compat.forceAdaptiveThinking`, because this gateway serves Claude with `thinking.type: "adaptive"` + `output_config.effort` and rejects the budget-based shape outright.
 
