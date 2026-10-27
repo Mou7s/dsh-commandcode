@@ -18,6 +18,7 @@ import {
   syncConfigSignature,
 } from '../lib/index.js'
 import { DEFAULT_CATALOG_URL } from '../lib/catalog.js'
+import { profileState } from '../lib/profile-state.js'
 
 const LLM_PI_AI = 'llm-pi-ai'
 const BRIDGE_PREFIX = '/api/dsh-commandcode-goat'
@@ -1038,6 +1039,10 @@ describe('the sync the bridge drives', () => {
     })
     const webServer = mockWebServer()
     const { ctx } = mockContext({ settings, webServer })
+    await profileState(settings, 'commandcode-goat').update((saved) => {
+      saved.plans.goat = { inventory: { openai: [{ id: 'old' }] } }
+      return saved
+    })
     const config = { plan: 'goat' }
     apply(ctx, config)
     config.plan = 'pro'
@@ -1084,6 +1089,10 @@ describe('the sync the bridge drives', () => {
     })
     const webServer = mockWebServer()
     const { ctx } = mockContext({ settings, webServer })
+    await profileState(settings, 'commandcode-goat').update((saved) => {
+      saved.plans.max = { inventory: { openai: [{ id: 'ghost' }] } }
+      return saved
+    })
     apply(ctx, Config({ plan: 'goat' }))
     const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/prune`)
 
@@ -1091,6 +1100,20 @@ describe('the sync the bridge drives', () => {
     assert.equal(payload.ok, true)
     assert.deepEqual(payload.value.removed, ['commandcode-max-autosync'])
     assert.equal(payload.value.plan, 'goat')
+  })
+
+  it('reports old routes without a model baseline as protected instead of deleting them', async () => {
+    const settings = mockSettings({ entries: [{ ns: LLM_PI_AI, revision: 1,
+      value: { providers: { 'commandcode-max-autosync': { models: [{ id: 'legacy', contextWindow: 1234 }] } } },
+      schema: { type: 'object', dict: { providers: {} } } }] })
+    const webServer = mockWebServer()
+    const { ctx } = mockContext({ settings, webServer })
+    apply(ctx, Config({ plan: 'goat' }))
+    const route = webServer.state.routes.find((entry) => entry.path === `${BRIDGE_PREFIX}/prune`)
+    const payload = await drive(route)
+    assert.deepEqual(payload.value.removed, [])
+    assert.deepEqual(payload.value.protected, ['commandcode-max-autosync'])
+    assert.equal(settings.state.mutations.length, 0)
   })
 
   it('describes all four tiers, and the routes of a plan that is not the selected one', async () => {

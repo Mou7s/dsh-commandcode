@@ -2,11 +2,13 @@
   "name": "dsh-commandcode-goat",
   "version": "0.8.0",
   "description": "Command Code for DSH｜订阅接入：同步 Go / GOAT / Pro / Max 模型，管理推理预设、用量提醒与联网搜索。",
+  "icon": "./assets/logo-native.png",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": { "default": "./lib/index.js" },
     "./client": { "default": "./lib/client.js" },
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
@@ -14,6 +16,7 @@
     "cordis.patch.yml",
     "README.md",
     "assets",
+    "locale",
     "screenshots.json"
   ],
   "scripts": {

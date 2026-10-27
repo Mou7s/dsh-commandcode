@@ -1171,7 +1171,7 @@ describe('rendering', () => {
     assert.match(text, /月费 \$10 \/ 月/)
     assert.match(text, /5 小时窗口 \$14/)
     assert.match(text, /每周窗口 \$35/)
-    assert.match(text, /月度余额 \$70/)
+    assert.match(text, /月度额度 \$70/)
     // Free models are counted here, and marked individually on their own names
     // in the model picker — the count is what the card can state without
     // listing them.
@@ -1348,13 +1348,13 @@ describe('rendering', () => {
   it('states every quota as a percentage with the figures behind it', async () => {
     const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': USAGE }))
     const text = textOf(component({ ...face })).join(' ')
-    assert.match(text, /月度余额/)
+    assert.match(text, /月度额度/)
     // The rolling windows lead and the monthly pool closes the group: the two
     // that move within a day are what the reader checks first.
     assert.ok(text.indexOf('5 小时窗口') < text.indexOf('每周窗口'))
-    assert.ok(text.indexOf('每周窗口') < text.indexOf('月度余额'))
+    assert.ok(text.indexOf('每周窗口') < text.indexOf('月度额度'))
     // the monthly pool is a remaining balance, so its share is spent/(spent+left)
-    assert.match(text, /0\.02%/)
+    assert.match(text, /已用 0\.02%/)
     // each window states used/cap directly: 12 of 60, and 6 of 60
     assert.match(text, /20%/)
     assert.match(text, /10%/)
@@ -1370,6 +1370,19 @@ describe('rendering', () => {
     assert.ok(text.indexOf('5 小时窗口') < text.indexOf('20%'))
     assert.ok(text.indexOf('20%') < text.indexOf('已用 $12 / 上限 $60'))
     assert.match(text, /可用 \$69\.99 · 本期已用 \$0\.01/)
+  })
+
+  it('does not invent a monthly percentage when the account data is incomplete', async () => {
+    for (const report of [
+      { ...USAGE, credits: { ...USAGE.credits, monthlyCreditsKnown: false } },
+      { ...USAGE, usage: { ...USAGE.usage, monthlyCreditsUsedKnown: false } },
+      { ...USAGE, usage: undefined },
+    ]) {
+      const { component, face } = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': report }))
+      const text = textOf(component({ ...face })).join(' ')
+      assert.doesNotMatch(text, /月度额度 已用/)
+      assert.match(text, /月度额度数据不完整/)
+    }
   })
 
   it('names both halves of every ratio instead of writing a bare a / b', async () => {
@@ -1554,7 +1567,7 @@ describe('rendering', () => {
       const text = textOf(tab.component({ ...tab.face })).join(' ')
       assert.match(text, /已清理 0 条残留路由/)
       assert.match(text, /保留了 commandcode-pro-autosync/)
-      assert.match(text, /modelOverrides/)
+      assert.match(text, /自定义配置|生成基线未知/)
     } finally {
       useStateValues = []
       globalThis.fetch = mounted.originalFetch
@@ -1593,7 +1606,7 @@ describe('rendering', () => {
     const noWindows = { ...USAGE, credits: { monthlyCredits: USAGE.credits.monthlyCredits, purchasedCredits: 0, freeCredits: 0 } }
     const bare = settingsTab(await mount({ '/describe': DESCRIBE, '/usage': noWindows }))
     const bareText = textOf(bare.component({ ...bare.face })).join(' ')
-    assert.match(bareText, /月度余额/)
+    assert.match(bareText, /月度额度/)
     assert.doesNotMatch(bareText, /窗口由/)
   })
 
@@ -2277,16 +2290,16 @@ describe('copy', () => {
     // Max is sold as two sizes: one line each, both on screen.
     assert.equal(
       internals.quotaLine(t, { label: 'Max 10×', price: 100, fiveHour: 45, weekly: 90, monthly: 150, premiumMonthly: 100 }),
-      'Max 10× · 月费 $100 / 月 · 5 小时窗口 $45 · 每周窗口 $90 · 月度余额 $150 · 高级额度 $100',
+      'Max 10× · 月费 $100 / 月 · 5 小时窗口 $45 · 每周窗口 $90 · 月度额度 $150 · 高级额度 $100',
     )
     assert.equal(
       internals.quotaLine(t, { label: 'Max 20×', price: 200, fiveHour: 90, weekly: 180, monthly: 300, premiumMonthly: 200 }),
-      'Max 20× · 月费 $200 / 月 · 5 小时窗口 $90 · 每周窗口 $180 · 月度余额 $300 · 高级额度 $200',
+      'Max 20× · 月费 $200 / 月 · 5 小时窗口 $90 · 每周窗口 $180 · 月度额度 $300 · 高级额度 $200',
     )
     // A tier with no premium pool simply does not mention one.
     assert.equal(
       internals.quotaLine(t, { label: 'GOAT', price: 10, fiveHour: 14, weekly: 35, monthly: 70 }),
-      'GOAT · 月费 $10 / 月 · 5 小时窗口 $14 · 每周窗口 $35 · 月度余额 $70',
+      'GOAT · 月费 $10 / 月 · 5 小时窗口 $14 · 每周窗口 $35 · 月度额度 $70',
     )
     assert.equal(internals.quotaLine(t, {}), '')
   })

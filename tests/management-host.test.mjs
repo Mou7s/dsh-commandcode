@@ -130,6 +130,44 @@ describe('0.8 management host actions', () => {
       assert.deepEqual(host.providers, {})
     })
   })
+  it('rejects confirmation if a provider is edited while discovery is in flight', async () => {
+    const host = mount()
+    await upstream(async () => {
+      await host.call('/sync')
+      const preview = await host.call('/sync', { dryRun: true })
+      const before = fetch
+      let start, release
+      const started = new Promise((resolve) => { start = resolve })
+      const gate = new Promise((resolve) => { release = resolve })
+      globalThis.fetch = async (url, init) => {
+        if (String(url).includes('/models')) { start(); await gate }
+        return before(url, init)
+      }
+      try {
+        const pending = host.call('/sync', { previewToken: preview.value.preview.token })
+        await started
+        host.providers['commandcode-goat-autosync'].models[0].contextWindow = 1234
+        release()
+        assert.equal((await pending).code, 'preview-stale')
+        assert.equal(host.providers['commandcode-goat-autosync'].models[0].contextWindow, 1234)
+      } finally { release(); globalThis.fetch = before }
+    })
+  })
+  it('previews a customized empty route as preserved', async () => {
+    const host = mount()
+    await upstream(async () => {
+      await host.call('/sync')
+      const route = host.providers['commandcode-goat-autosync']
+      route.models[0].contextWindow = 1234
+      await host.call('/manage', { action: 'options', options: { onlyFavorites: true } })
+      const preview = await host.call('/sync', { dryRun: true })
+      assert.equal(preview.value.preview.diff.summary.removed, 0)
+      assert.ok(preview.value.diagnostics.some((message) => message.includes('is retained')))
+      const applied = await host.call('/sync', { previewToken: preview.value.preview.token })
+      assert.equal(applied.ok, true)
+      assert.equal(host.providers['commandcode-goat-autosync'].models[0].contextWindow, 1234)
+    })
+  })
   it('publishes selected favorite models with a preset and never automatically probes them', async () => {
     const host = mount()
     await upstream(async (calls) => {
