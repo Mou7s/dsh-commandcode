@@ -232,7 +232,7 @@ describe('buildEntries', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat' })
     const [model] = routes.openai
     assert.deepEqual(model.input, ['text', 'image'])
-    assert.deepEqual(model.reasoningEfforts, { off: null, medium: 'medium' })
+    assert.deepEqual(model.reasoningEfforts, { medium: 'medium' })
     assert.equal(model.name, 'Model One')
     assert.equal(model.contextWindow, 200000)
   })
@@ -270,7 +270,7 @@ describe('buildEntries', () => {
 
   it('keeps the protocol convention for a model the reference does not describe', () => {
     const { routes } = buildEntries({ apiList, catalog, plan: 'goat', effortLevels: {} })
-    assert.deepEqual(routes.openai[0].reasoningEfforts, { off: null, medium: 'medium' })
+    assert.deepEqual(routes.openai[0].reasoningEfforts, { medium: 'medium' })
   })
 
   it('marks a model the vendor has put on a deal, in its name', () => {

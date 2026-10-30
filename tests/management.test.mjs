@@ -98,3 +98,26 @@ describe('portable configuration transfer', () => {
       configuration: { targetBaseURL: 'https://evil.invalid' } }, {}))
   })
 })
+
+
+describe('snapshot fallback for presets', () => {
+  it('uses the bundled ladder when the live reference omits a model', () => {
+    const models = { openai: [{ id: 'deepseek/deepseek-v4-pro' }] }
+    const next = applyModelPreferences(models, { effortLevels: {}, preferences: { 'deepseek/deepseek-v4-pro': { reasoningPreset: 'deep' } } })
+    assert.deepEqual(next.openai[0].reasoningEfforts, { off: 'off', max: 'max' })
+  })
+  it('does not replace an explicit no-control entry with bundled levels', () => {
+    const models = { openai: [{ id: 'deepseek/deepseek-v4-pro' }] }
+    const next = applyModelPreferences(models, { effortLevels: { 'deepseek/deepseek-v4-pro': [] }, preferences: { 'deepseek/deepseek-v4-pro': { reasoningPreset: 'deep' } } })
+    assert.equal(next.openai[0].reasoningEfforts, undefined)
+  })
+})
+
+
+describe('legacy effort-control preference', () => {
+  it('keeps disabling controls compatible without claiming an off wire value', () => {
+    const next = applyModelPreferences(routes, { preferences: { a: { reasoningPreset: 'off' } } })
+    assert.equal(next.openai[0].reasoningEfforts, false)
+    assert.deepEqual(routes.openai[0].reasoningEfforts, { medium: 'medium' })
+  })
+})

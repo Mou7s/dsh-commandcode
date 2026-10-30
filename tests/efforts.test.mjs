@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { BUNDLED_EFFORTS, DEFAULT_EFFORTS_URL, EFFORT_LEVELS, effortMap, fetchEfforts, parseEfforts } from '../lib/efforts.js'
+import { BUNDLED_EFFORTS, DEFAULT_EFFORTS_URL, EFFORT_LEVELS, effortMap, fetchEfforts, parseEfforts, resolveEfforts } from '../lib/efforts.js'
 
 /**
  * The reference the official CLI ships, reduced to the two shapes that matter:
@@ -24,8 +24,8 @@ describe('effort reference', () => {
     })
   })
 
-  it('drops levels the reference does not spell, and normalizes case and repeats', () => {
-    const table = parseEfforts('| `a/b` | n | 1M | LOW, High, high, turbo | $1 | Go | b |\n')
+  it('normalizes case and repeated supported levels', () => {
+    const table = parseEfforts('| `a/b` | n | 1M | LOW, High, high | $1 | Go | b |\n')
     assert.deepEqual(table, { 'a/b': ['low', 'high'] })
   })
 
@@ -95,5 +95,23 @@ describe('bundled snapshot', () => {
       assert.equal(new Set(levels).size, levels.length, `${id} repeats a level`)
     }
     assert.ok(Object.keys(BUNDLED_EFFORTS).length >= 90)
+  })
+})
+
+
+describe('reference resilience', () => {
+  it('locates reordered columns and sorts levels by strength', () => {
+    assert.deepEqual(parseEfforts('| Efforts | Id (use EXACTLY this) | Name |\n| max, low, high | `a/b` | B |'), { 'a/b': ['low', 'high', 'max'] })
+  })
+  it('rejects unknown, empty, off-only and conflicting declarations with diagnostics', () => {
+    const diagnostics = []
+    const result = parseEfforts('| `a/b` | B | 1M | turbo |\n| `c/d` | D | 1M | |\n| `e/f` | F | 1M | high |\n| `e/f` | F | 1M | low |\n| `g/h` | H | 1M | off |', diagnostics)
+    assert.deepEqual(result, {})
+    assert.equal(diagnostics.length, 4)
+  })
+  it('preserves explicit no-control entries while filling missing models from the snapshot', () => {
+    const levels = resolveEfforts({ 'deepseek/deepseek-v4-pro': [] })
+    assert.deepEqual(levels['deepseek/deepseek-v4-pro'], [])
+    assert.deepEqual(levels['zai-org/GLM-5.2'], ['high', 'max'])
   })
 })
